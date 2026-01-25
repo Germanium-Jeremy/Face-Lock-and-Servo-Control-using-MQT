@@ -15,8 +15,11 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List
 import cv2
 import numpy as np
+from pathlib import Path
 try:
      import mediapipe as mp
+     from mediapipe.tasks.python import vision
+     from mediapipe.tasks.python import BaseOptions
 except Exception as e:
      mp = None
      _MP_IMPORT_ERROR = e
@@ -183,13 +186,16 @@ class Haar5ptDetector:
                     f"Install: pip install mediapipe==0.10.21"
                )
           
-          self.mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
-               static_image_mode=False,
-               max_num_faces=1,
-               refine_landmarks=True,
-               min_detection_confidence=0.5,
-               min_tracking_confidence=0.5,
+          MODEL_PATH = Path(__file__).resolve().parent.parent / "face_landmarker.task"
+
+          options = vision.FaceLandmarkerOptions(
+               base_options=BaseOptions(model_asset_path=str(MODEL_PATH)),
+               num_faces=1,
+               output_face_blendshapes=False,
+               output_facial_transformation_matrixes=False,
           )
+
+          self.landmarker = vision.FaceLandmarker.create_from_options(options)
 
           # FaceMesh landmark indices for 5 points | (commonly used set; works well in practice)
           self.IDX_LEFT_EYE = 33
@@ -218,11 +224,18 @@ class Haar5ptDetector:
      def _facemesh_5pt(self, frame_bgr: np.ndarray) -> Optional[np.ndarray]:
           H, W = frame_bgr.shape[:2]
           rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-          res = self.mp_face_mesh.process(rgb)
-          if not res.multi_face_landmarks:
+
+          mp_image = mp.Image(
+               image_format=mp.ImageFormat.SRGB,
+               data=rgb
+          )
+
+          res = self.landmarker.detect(mp_image)
+
+          if not res.face_landmarks:
                return None
-          
-          lm = res.multi_face_landmarks[0].landmark
+
+          lm = res.face_landmarks[0]
 
           idxs = [
                self.IDX_LEFT_EYE,
@@ -231,19 +244,20 @@ class Haar5ptDetector:
                self.IDX_MOUTH_LEFT,
                self.IDX_MOUTH_RIGHT,
           ]
-          
+
           pts = []
           for i in idxs:
                p = lm[i]
                pts.append([p.x * W, p.y * H])
 
-          kps = np.array(pts, dtype=np.float32) # (5,2)
+          kps = np.array(pts, dtype=np.float32)
 
-          # Ensure left/right ordering for eyes & mouth | (FaceMesh usually already correct, but keep safe)
+          # enforce left/right
           if kps[0, 0] > kps[1, 0]:
                kps[[0, 1]] = kps[[1, 0]]
           if kps[3, 0] > kps[4, 0]:
                kps[[3, 4]] = kps[[4, 3]]
+
           return kps
      
      def detect(self, frame_bgr: np.ndarray, max_faces: int = 1) -> List[FaceKpsBox]:

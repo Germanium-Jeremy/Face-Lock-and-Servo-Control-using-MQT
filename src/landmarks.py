@@ -9,6 +9,8 @@ q : quit
 """
 import cv2
 import numpy as np
+from mediapipe.tasks.python import vision
+from mediapipe.tasks.python import BaseOptions
 import mediapipe as mp
 
 # 5-point indices (FaceMesh)
@@ -25,13 +27,22 @@ def main():
           raise RuntimeError(f"Failed to load cascade: {cascade_path}")
      
      # FaceMesh
-     fm = mp.solutions.face_mesh.FaceMesh(
-          static_image_mode=False,
-          max_num_faces=1,
-          refine_landmarks=True,
-          min_detection_confidence=0.5,
-          min_tracking_confidence=0.5,
+     # fm = mp.solutions.face_mesh.FaceMesh(
+     #      static_image_mode=False,
+     #      max_num_faces=1,
+     #      refine_landmarks=True,
+     #      min_detection_confidence=0.5,
+     #      min_tracking_confidence=0.5,
+     # )
+
+     # FaceLandmarker (not used for inference here, just to show minimal setup)
+     options = vision.FaceLandmarkerOptions(
+          base_options=BaseOptions(model_asset_path="face_landmarker.task"),
+          num_faces=1,
+          output_face_blendshapes=False,
+          output_facial_transformation_matrixes=False
      )
+     landmarker = vision.FaceLandmarker.create_from_options(options)
      
      cap = cv2.VideoCapture(1)
      if not cap.isOpened():
@@ -53,10 +64,15 @@ def main():
 
           # FaceMesh on full frame (simple)
           rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-          res = fm.process(rgb)
+          # res = fm.process(rgb)
+          mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+          res = landmarker.detect(mp_image)
 
-          if res.multi_face_landmarks:
-               lm = res.multi_face_landmarks[0].landmark
+          if res.face_landmarks:
+               # lm = res.multi_face_landmarks[0].landmark
+               if res.face_landmarks:
+                    lm = res.face_landmarks[0]
+
                idxs = [IDX_LEFT_EYE, IDX_RIGHT_EYE, IDX_NOSE_TIP, IDX_MOUTH_LEFT, IDX_MOUTH_RIGHT]
 
                pts = []

@@ -41,23 +41,25 @@ class ArcFaceEmbedderONNX:
      Output: L2-normalized embedding vector.
      """
 
-def __init__(
-     self,
-     model_path: str = "models/embedder_arcface.onnx",
-     input_size: Tuple[int, int] = (112, 112),
-     debug: bool = False,
-):
-     self.in_w, self.in_h = input_size
-     self.debug = debug
+     def __init__(
+          self,
+          model_path: str = "models/embedder_arcface.onnx",
+          input_size: Tuple[int, int] = (112, 112),
+          debug: bool = False,
+     ):
+          self.in_w, self.in_h = input_size
+          self.debug = debug
 
-     self.sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-     self.in_name = self.sess.get_inputs()[0].name
-     self.out_name = self.sess.get_outputs()[0].name
+          self.sess = ort.InferenceSession(
+               model_path, providers=["CPUExecutionProvider"]
+          )
+          self.in_name = self.sess.get_inputs()[0].name
+          self.out_name = self.sess.get_outputs()[0].name
 
-     if debug:
-          print("[embed] model loaded")
-          print("[embed] input:", self.sess.get_inputs()[0].shape)
-          print("[embed] output:", self.sess.get_outputs()[0].shape)
+          if debug:
+               print("[embed] model loaded")
+               print("[embed] input:", self.sess.get_inputs()[0].shape)
+               print("[embed] output:", self.sess.get_outputs()[0].shape)
 
      def _preprocess(self, aligned_bgr: np.ndarray) -> np.ndarray:
           if aligned_bgr.shape[:2] != (self.in_h, self.in_w):
@@ -67,18 +69,19 @@ def __init__(
           rgb = (rgb - 127.5) / 128.0
           x = np.transpose(rgb, (2, 0, 1))[None, ...]
           return x.astype(np.float32)
-     
+
      @staticmethod
      def _l2_normalize(v: np.ndarray, eps: float = 1e-12):
           n = float(np.linalg.norm(v) + eps)
           return (v / n).astype(np.float32), n
-     
+
      def embed(self, aligned_bgr: np.ndarray) -> EmbeddingResult:
           x = self._preprocess(aligned_bgr)
           y = self.sess.run([self.out_name], {self.in_name: x})[0]
           v = y.reshape(-1).astype(np.float32)
           v_norm, n0 = self._l2_normalize(v)
           return EmbeddingResult(v_norm, n0, v_norm.size)
+
      
 # -------------------------
 # Visualization helpers
