@@ -33,8 +33,9 @@ except Exception as e:
      mp = None
      _MP_IMPORT_ERROR = e
 
-     # Reuse your known-good alignment method (you said alignment is OK now)
-     from .haar_5pt import align_face_5pt
+# Reuse your known-good alignment method
+from .haar_5pt import align_face_5pt
+from .tracker import FaceTracker, draw_tracked_face
 
 
 # -------------------------
@@ -374,17 +375,27 @@ def main():
      
      db = load_db_npz(db_path)
      matcher = FaceDBMatcher(db=db, dist_thresh=0.34) # from your evaluate_new output
+     
+     # Initialize face tracker
+     tracker = FaceTracker(
+          max_disappeared=30,  # frames before removing track
+          max_distance=100.0,  # max centroid distance for matching
+          iou_threshold=0.3,  # IoU threshold for matching
+          smooth_alpha=0.7,  # smoothing factor for bbox updates
+          velocity_alpha=0.5,  # smoothing factor for velocity
+     )
 
      cap = cv2.VideoCapture(0)
      if not cap.isOpened():
           raise RuntimeError("Camera not available")
      
-     print("Recognize (multi-face). q=quit, r=reload DB, +/- threshold, d=debug overlay")
+     print("Recognize (multi-face with tracking). q=quit, r=reload DB, +/- threshold, d=debug overlay, t=toggle tracking")
 
      t0 = time.time()
      frames = 0
      fps: Optional[float] = None
      show_debug = False
+     use_tracking = True  # Enable tracking by default
 
      while True:
           ok, frame = cap.read()
@@ -402,8 +413,48 @@ def main():
                frames = 0
                t0 = time.time()
 
-          # draw + recognize each face
-          # show aligned thumbnails stacked on the RIGHT, but lower to avoid overlay with green text
+          # Update tracker with detections
+          if use_tracking:
+               # Prepare detections for tracker
+               detections = [(f.x1, f.y1, f.x2, f.y2) for f in faces]
+               kps_list = [f.kps for f in faces]
+               
+               # Update tracker
+               tracked_faces_dict = tracker.update(detections, kps_list=kps_list)
+               
+               # Map detections to tracked faces for recognition
+               # Match each detection to its corresponding track
+               detection_to_track = {}
+               for i, f in enumerate(faces):
+                    det_bbox = (f.x1, f.y1, f.x2, f.y2)
+                    det_centroid = ((f.x1 + f.x2) / 2, (f.y1 + f.y2) / 2)
+                    
+                    # Find closest tracked face
+                    best_track_id = None
+                    best_dist = float('inf')
+                    
+                    for track_id, tracked in tracked_faces_dict.items():
+                         # Check if this detection matches the tracked bbox
+                         track_centroid = tracked.centroid
+                         dist = np.sqrt((det_centroid[0] - track_centroid[0])**2 + 
+                                      (det_centroid[1] - track_centroid[1])**2)
+                         
+                         # Also check IoU
+                         iou = tracker._compute_iou(det_bbox, tracked.bbox)
+                         
+                         # Combined score (prefer high IoU and low distance)
+                         score = (1.0 - iou) * 0.5 + (dist / 100.0) * 0.5
+                         
+                         if score < best_dist and dist < 80:  # reasonable threshold
+                              best_dist = score
+                              best_track_id = track_id
+                    
+                    if best_track_id is not None:
+                         detection_to_track[i] = best_track_id
+          else:
+               tracked_faces_dict = {}
+
+          # Process each detection for recognition
           h, w = vis.shape[:2]
           thumb = 112
           pad = 8
@@ -411,44 +462,92 @@ def main():
           y0 = 80 # moved down to avoid your text overlay area
           shown = 0
 
+          # Recognition: process detections and update tracked faces
           for i, f in enumerate(faces):
-               # draw bbox + kps
-               cv2.rectangle(vis, (f.x1, f.y1), (f.x2, f.y2), (0, 255, 0), 2)
-               for (x, y) in f.kps.astype(int):
-                    cv2.circle(vis, (int(x), int(y)), 2, (0, 255, 0), -1)
-
                # align -> embed -> match
                aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
                emb = embedder.embed(aligned)
                mr = matcher.match(emb)
 
-               # label
-               label = mr.name if mr.name is not None else "Unknown"
-               line1 = f"{label}"
-               line2 = f"dist={mr.distance:.3f} sim={mr.similarity:.3f}"
+               # Update tracked face with recognition results
+               if use_tracking and i in detection_to_track:
+                    track_id = detection_to_track[i]
+                    if track_id in tracked_faces_dict:
+                         tracked = tracked_faces_dict[track_id]
+                         # Update identity and stats
+                         tracker.update_identity(
+                              track_id,
+                              mr.name if mr.accepted else None,
+                              mr.distance,
+                              mr.similarity,
+                              embedding=emb,
+                         )
+                         # Update keypoints from fresh detection
+                         tracked.kps = f.kps
 
-               # color: known green, unknown red
-               color = (0, 255, 0) if mr.accepted else (0, 0, 255)
+          # Draw tracked faces (if tracking) or raw detections (if not)
+          if use_tracking:
+               for tracked in tracked_faces_dict.values():
+                    # Draw tracked face with tracking visualization
+                    vis = draw_tracked_face(
+                         vis, tracked,
+                         show_id=True,
+                         show_identity=True,
+                         show_stats=show_debug,
+                         thickness=2,
+                    )
+                    
+                    # Draw additional info if debug
+                    if show_debug:
+                         x1, y1, x2, y2 = tracked.bbox
+                         debug_text = f"age={tracked.age} hits={tracked.hits} conf={tracked.confidence:.2f}"
+                         cv2.putText(vis, debug_text, (x1, y2 + 40),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                    
+                    # Show aligned thumbnail for recognized faces
+                    if tracked.identity and tracked.kps is not None and shown < 4:
+                         aligned, _ = align_face_5pt(frame, tracked.kps, out_size=(112, 112))
+                         if y0 + thumb <= h:
+                              vis[y0:y0 + thumb, x0:x0 + thumb] = aligned
+                              cv2.putText(vis, f"{tracked.track_id}:{tracked.identity}", 
+                                        (x0, y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+                              y0 += thumb + pad
+                              shown += 1
+          else:
+               # No tracking: draw raw detections
+               for i, f in enumerate(faces):
+                    # align -> embed -> match (if not already done)
+                    aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
+                    emb = embedder.embed(aligned)
+                    mr = matcher.match(emb)
+                    
+                    label = mr.name if mr.name is not None else "Unknown"
+                    color = (0, 255, 0) if mr.accepted else (0, 0, 255)
+                    
+                    # draw bbox + kps
+                    cv2.rectangle(vis, (f.x1, f.y1), (f.x2, f.y2), color, 2)
+                    for (x, y) in f.kps.astype(int):
+                         cv2.circle(vis, (int(x), int(y)), 2, color, -1)
+                    
+                    # label
+                    line1 = f"{label}"
+                    line2 = f"dist={mr.distance:.3f} sim={mr.similarity:.3f}"
+                    cv2.putText(vis, line1, (f.x1, max(0, f.y1 - 28)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+                    cv2.putText(vis, line2, (f.x1, max(0, f.y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                    
+                    # aligned preview thumbnails (stack)
+                    if y0 + thumb <= h and shown < 4:
+                         vis[y0:y0 + thumb, x0:x0 + thumb] = aligned
+                         cv2.putText(vis, f"{i+1}:{label}", (x0, y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+                         y0 += thumb + pad
+                         shown += 1
 
-               cv2.putText(vis, line1, (f.x1, max(0, f.y1 - 28)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-               cv2.putText(vis, line2, (f.x1, max(0, f.y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-               
-               # aligned preview thumbnails (stack)
-               if y0 + thumb <= h and shown < 4:
-                    vis[y0:y0 + thumb, x0:x0 + thumb] = aligned
-                    cv2.putText(vis, f"{i+1}:{label}", (x0, y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
-                    y0 += thumb + pad
-                    shown += 1
-
-               if show_debug:
-                    # show kps coords quickly
-                    dbg = f"kpsLeye=({f.kps[0,0]:.0f},{f.kps[0,1]:.0f})"
-                    cv2.putText(vis, dbg, (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-          
           # overlay header
           header = f"IDs={len(matcher._names)} thr(dist)={matcher.dist_thresh:.2f}"
           if fps is not None:
                header += f" fps={fps:.1f}"
+          if use_tracking:
+               header += f" tracks={len(tracked_faces_list)}"
 
           cv2.putText(vis, header, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
 
@@ -469,6 +568,11 @@ def main():
           elif key == ord("d"):
                show_debug = not show_debug
                print(f"[recognize] debug overlay: {'ON' if show_debug else 'OFF'}")
+          elif key == ord("t"):
+               use_tracking = not use_tracking
+               if not use_tracking:
+                    tracker.clear()  # Clear tracks when disabling
+               print(f"[recognize] tracking: {'ON' if use_tracking else 'OFF'}")
 
      cap.release()
      cv2.destroyAllWindows()

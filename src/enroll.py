@@ -31,6 +31,7 @@ import cv2
 import numpy as np
 from .haar_5pt import Haar5ptDetector, align_face_5pt
 from .embed import ArcFaceEmbedderONNX
+from .tracker import FaceTracker, draw_tracked_face
 
 # -------------------------
 # Config
@@ -161,6 +162,15 @@ def main():
      # Pipeline (your working practical stack)
      det = Haar5ptDetector(min_size=(70, 70), smooth_alpha=0.80, debug=False)
      emb = ArcFaceEmbedderONNX(model_path="models/embedder_arcface.onnx", input_size=(112, 112), debug=False)
+     
+     # Initialize face tracker for smooth bounding box tracking
+     tracker = FaceTracker(
+          max_disappeared=15,  # frames before removing track
+          max_distance=80.0,  # max centroid distance for matching
+          iou_threshold=0.3,  # IoU threshold for matching
+          smooth_alpha=0.75,  # smoothing factor for bbox updates
+          velocity_alpha=0.6,  # smoothing factor for velocity
+     )
 
      db = load_db(cfg)
 
@@ -206,18 +216,46 @@ def main():
                faces = det.detect(frame, max_faces=1)
 
                aligned: Optional[np.ndarray] = None
+               tracked_face = None
 
                if faces:
                     f = faces[0]
-
-                    # draw bbox + kps
-                    cv2.rectangle(vis, (f.x1, f.y1), (f.x2, f.y2), (0, 255, 0), 2)
-                    for (x, y) in f.kps.astype(int):
-                         cv2.circle(vis, (int(x), int(y)), 3, (0, 255, 0), -1)
-
-                    aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
+                    
+                    # Update tracker
+                    detections = [(f.x1, f.y1, f.x2, f.y2)]
+                    kps_list = [f.kps]
+                    tracked_faces_dict = tracker.update(detections, kps_list=kps_list)
+                    
+                    # Get the tracked face (should be only one)
+                    if tracked_faces_dict:
+                         tracked_face = list(tracked_faces_dict.values())[0]
+                         tracked_face.kps = f.kps  # Update with fresh keypoints
+                         
+                         # Use tracked bbox for display (smooth tracking)
+                         x1, y1, x2, y2 = tracked_face.bbox
+                         
+                         # Draw tracked face with smooth bounding box
+                         vis = draw_tracked_face(
+                              vis, tracked_face,
+                              show_id=False,  # Don't show ID during enrollment
+                              show_identity=False,
+                              show_stats=False,
+                              thickness=2,
+                         )
+                         
+                         # Align using tracked keypoints (use fresh kps from detection)
+                         aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
+                    else:
+                         # Fallback: draw raw detection
+                         cv2.rectangle(vis, (f.x1, f.y1), (f.x2, f.y2), (0, 255, 0), 2)
+                         for (x, y) in f.kps.astype(int):
+                              cv2.circle(vis, (int(x), int(y)), 3, (0, 255, 0), -1)
+                         aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
+                    
                     cv2.imshow(cfg.window_aligned, aligned)
                else:
+                    # No face detected - update tracker (will increment time_since_update)
+                    tracker.update([], kps_list=[])
                     cv2.imshow(cfg.window_aligned, np.zeros((112, 112, 3), dtype=np.uint8))
 
                # auto capture
@@ -232,80 +270,81 @@ def main():
                          fn = person_dir / f"{int(now * 1000)}.jpg"
                          cv2.imwrite(str(fn), aligned)
 
-                    # FPS
-                    frames += 1
-                    dt = time.time() - t0
-                    if dt >= 1.0:
-                         fps = frames / dt
-                         frames = 0
-                         t0 = time.time()
+               # FPS calculation (every frame)
+               frames += 1
+               dt = time.time() - t0
+               if dt >= 1.0:
+                    fps = frames / dt
+                    frames = 0
+                    t0 = time.time()
 
-                    if fps is not None:
-                         cv2.putText(vis, f"FPS: {fps:.1f}", (10, vis.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
+               # Draw UI (every frame)
+               if fps is not None:
+                    cv2.putText(vis, f"FPS: {fps:.1f}", (10, vis.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
 
-                    draw_status(
-                         vis,
-                         name=name,
-                         base_count=len(base_samples),
-                         new_count=len(new_samples),
-                         needed=cfg.samples_needed,
-                         auto=auto,
-                         msg=status_msg,
-                    )
+               draw_status(
+                    vis,
+                    name=name,
+                    base_count=len(base_samples),
+                    new_count=len(new_samples),
+                    needed=cfg.samples_needed,
+                    auto=auto,
+                    msg=status_msg,
+               )
 
-                    cv2.imshow(cfg.window_main, vis)
-                    key = cv2.waitKey(1) & 0xFF
+               cv2.imshow(cfg.window_main, vis)
+               key = cv2.waitKey(1) & 0xFF
 
-                    if key == ord("q"):
-                         break
+               if key == ord("q"):
+                    break
 
-                    if key == ord("a"):
-                         auto = not auto
-                         status_msg = f"Auto mode {'ON' if auto else 'OFF'}"
+               if key == ord("a"):
+                    auto = not auto
+                    status_msg = f"Auto mode {'ON' if auto else 'OFF'}"
 
-                    if key == ord("r"):
-                         new_samples.clear()
-                         status_msg = "NEW samples reset (existing kept)."
+               if key == ord("r"):
+                    new_samples.clear()
+                    status_msg = "NEW samples reset (existing kept)."
 
-                    if key == ord(" "): # SPACE
-                         if aligned is None:
-                              status_msg = "No face detected. Not captured."
-                         else:
-                              r = emb.embed(aligned)
-                              new_samples.append(r.embedding)
-                              status_msg = f"Captured NEW ({len(new_samples)})"
+               if key == ord(" "): # SPACE
+                    if aligned is None:
+                         status_msg = "No face detected. Not captured."
+                    else:
+                         r = emb.embed(aligned)
+                         new_samples.append(r.embedding)
+                         status_msg = f"Captured NEW ({len(new_samples)})"
 
-                              if cfg.save_crops:
-                                   fn = person_dir / f"{int(time.time() * 1000)}.jpg"
-                                   cv2.imwrite(str(fn), aligned)
+                         if cfg.save_crops:
+                              fn = person_dir / f"{int(time.time() * 1000)}.jpg"
+                              cv2.imwrite(str(fn), aligned)
 
-                    if key == ord("s"):
-                         total = len(base_samples) + len(new_samples)
-                         if total < max(3, cfg.samples_needed // 2):
-                              status_msg = f"Not enough total samples to save (have {total})."
-                              continue
+               if key == ord("s"):
+                    total = len(base_samples) + len(new_samples)
+                    if total < max(3, cfg.samples_needed // 2):
+                         status_msg = f"Not enough total samples to save (have {total})."
+                         continue
 
-                         all_samples = base_samples + new_samples
-                         template = mean_embedding(all_samples)
-                         db[name] = template
+                    all_samples = base_samples + new_samples
+                    template = mean_embedding(all_samples)
+                    db[name] = template
 
-                         meta = {
-                              "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                              "embedding_dim": int(template.size),
-                              "names": sorted(db.keys()),
-                              "samples_existing_used": int(len(base_samples)),
-                              "samples_new_used": int(len(new_samples)),
-                              "samples_total_used": int(len(all_samples)),
-                              "note": "Embeddings are L2-normalized vectors. Matching uses cosine similarity.",
-                         }
-                         save_db(cfg, db, meta)
+                    meta = {
+                         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                         "embedding_dim": int(template.size),
+                         "names": sorted(db.keys()),
+                         "samples_existing_used": int(len(base_samples)),
+                         "samples_new_used": int(len(new_samples)),
+                         "samples_total_used": int(len(all_samples)),
+                         "note": "Embeddings are L2-normalized vectors. Matching uses cosine similarity.",
+                    }
+                    save_db(cfg, db, meta)
 
-                         status_msg = f"Saved '{name}' to DB. Total identities: {len(db)}"
-                         print(status_msg)
+                    status_msg = f"Saved '{name}' to DB. Total identities: {len(db)}"
+                    print(status_msg)
 
-                         # reload base from disk so UI matches reality
-                         base_samples = load_existing_samples_from_crops(cfg, emb, person_dir)
-                         new_samples.clear()
+                    # reload base from disk so UI matches reality
+                    base_samples = load_existing_samples_from_crops(cfg, emb, person_dir)
+                    new_samples.clear()
      finally:
           cap.release()
           cv2.destroyAllWindows()

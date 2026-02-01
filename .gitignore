@@ -1,4 +1,6 @@
 .venv
 /models
+/data
+/book
 __pycache__/
 *.pyc
