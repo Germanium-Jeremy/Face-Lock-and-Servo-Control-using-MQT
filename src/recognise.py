@@ -29,6 +29,8 @@ import numpy as np
 import onnxruntime as ort
 try:
      import mediapipe as mp
+     from mediapipe.tasks.python import vision
+     from mediapipe.tasks.python import BaseOptions
 except Exception as e:
      mp = None
      _MP_IMPORT_ERROR = e
@@ -211,14 +213,18 @@ class HaarFaceMesh5pt:
           if mp is None:
                raise RuntimeError(f"mediapipe import failed: {_MP_IMPORT_ERROR}\n Install: pip install mediapipe==0.10.21")
           
-          # IMPORTANT: we run FaceMesh on ROI (one face per ROI), so max_num_faces=1
-          self.mesh = mp.solutions.face_mesh.FaceMesh(
-               static_image_mode=False,
-               max_num_faces=1,
-               refine_landmarks=True,
-               min_detection_confidence=0.5,
-               min_tracking_confidence=0.5,
+          # Use MediaPipe Tasks API (same as haar_5pt.py)
+          MODEL_PATH = Path(__file__).resolve().parent.parent / "face_landmarker.task"
+          
+          options = vision.FaceLandmarkerOptions(
+               base_options=BaseOptions(model_asset_path=str(MODEL_PATH)),
+               num_faces=1,  # IMPORTANT: we run FaceMesh on ROI (one face per ROI)
+               output_face_blendshapes=False,
+               output_facial_transformation_matrixes=False,
           )
+          
+          self.landmarker = vision.FaceLandmarker.create_from_options(options)
+          
           # 5pt indices (same as your working file)
           self.IDX_LEFT_EYE = 33
           self.IDX_RIGHT_EYE = 263
@@ -244,12 +250,18 @@ class HaarFaceMesh5pt:
           if H < 20 or W < 20:
                return None
 
+          # Convert to RGB and create MediaPipe Image
           rgb = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2RGB)
-          res = self.mesh.process(rgb)
-          if not res.multi_face_landmarks:
+          mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+          
+          # Detect landmarks using Tasks API
+          res = self.landmarker.detect(mp_image)
+          
+          if not res.face_landmarks:
                return None
           
-          lm = res.multi_face_landmarks[0].landmark
+          # Extract 5 keypoints
+          lm = res.face_landmarks[0]
           idxs = [self.IDX_LEFT_EYE, self.IDX_RIGHT_EYE, self.IDX_NOSE_TIP, self.IDX_MOUTH_LEFT, self.IDX_MOUTH_RIGHT]
 
           pts = []
@@ -385,7 +397,7 @@ def main():
           velocity_alpha=0.5,  # smoothing factor for velocity
      )
 
-     cap = cv2.VideoCapture(0)
+     cap = cv2.VideoCapture(1)
      if not cap.isOpened():
           raise RuntimeError("Camera not available")
      
@@ -547,7 +559,7 @@ def main():
           if fps is not None:
                header += f" fps={fps:.1f}"
           if use_tracking:
-               header += f" tracks={len(tracked_faces_list)}"
+               header += f" tracks={len(tracked_faces_dict)}"
 
           cv2.putText(vis, header, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
 

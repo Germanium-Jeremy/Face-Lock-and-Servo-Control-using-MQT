@@ -29,7 +29,7 @@ def _safe_imshow(win: str, img: np.ndarray):
           return
      cv2.imshow(win, img)
 
-def main(cam_index: int = 0, out_size: Tuple[int, int] = (112, 112), mirror: bool = True):
+def main(cam_index: int = 1, out_size: Tuple[int, int] = (112, 112), mirror: bool = True):
      cap = cv2.VideoCapture(cam_index)
      det = Haar5ptDetector(min_size=(70, 70), smooth_alpha=0.80, debug=True)
      

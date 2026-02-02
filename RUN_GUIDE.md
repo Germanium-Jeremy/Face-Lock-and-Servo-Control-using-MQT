@@ -1,6 +1,6 @@
-# Face Recognition System - Complete Run Guide
+# Face Recognition & Tracking System - Complete Run Guide
 
-This guide walks you through running the face recognition system step-by-step, following the methodology described in the ResearchGate paper: **"Face Recognition with ArcFace ONNX and 5-Point Alignment"**.
+This guide walks you through running the face recognition & tracking system step-by-step, following the methodology described in the ResearchGate paper: **"Face Recognition with ArcFace ONNX and 5-Point Alignment"**.
 
 ---
 
