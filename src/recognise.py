@@ -10,12 +10,16 @@ q : quit
 r : reload DB from disk (data/db/face_db.npz)
 +/- : adjust threshold (distance) live
 d : toggle debug overlay
+t : toggle tracking
+Locking: l=lock face, u=unlock face, c=clear all locks, L=reload locks
 Notes:
 - We run FaceMesh on EACH Haar face ROI (not the full frame). This avoids the
-“FaceMesh points not consistent with Haar box” problem and enables multi-face.
+"FaceMesh points not consistent with Haar box" problem and enables multi-face.
 - DB is expected from enroll: data/db/face_db.npz (name -> embedding vector)
 - Distance definition: cosine_distance = 1 - cosine_similarity.
 Since embeddings are L2-normalized, cosine_similarity = dot(a,b).
+- PERSISTENT LOCKING: Locked faces are stored to disk and automatically
+re-locked when they reappear in the camera frame.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ import time
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -59,6 +63,16 @@ class MatchResult:
      distance: float
      similarity: float
      accepted: bool
+
+@dataclass
+class LockedFace:
+     name: str
+     embedding: np.ndarray
+     timestamp: float
+     lock_duration: float = 300.0  # 5 minutes default
+     
+     def is_expired(self, current_time: float) -> bool:
+         return current_time - self.timestamp > self.lock_duration
 
 
 # -------------------------
@@ -328,7 +342,7 @@ class HaarFaceMesh5pt:
                     )
                )
           return out
-     
+    
 
 # -------------------------
 # Matcher
@@ -377,6 +391,156 @@ class FaceDBMatcher:
 
 
 # -------------------------
+# Face Lock Manager
+# -------------------------
+
+class FaceLockManager:
+     """
+     Manages persistent face locking across camera frames.
+     Maintains a database of locked faces with their embeddings.
+     """
+     def __init__(self, lock_duration: float = 300.0, match_threshold: float = 0.3):
+          self.lock_duration = lock_duration  # seconds
+          self.match_threshold = match_threshold  # cosine distance threshold
+          self.locked_faces: Dict[str, LockedFace] = {}  # name -> LockedFace
+          self.lock_file_path = Path("data/locked_faces.json")
+          
+     def lock_face(self, name: str, embedding: np.ndarray) -> bool:
+          """Lock a face by name and embedding."""
+          current_time = time.time()
+          self.locked_faces[name] = LockedFace(
+               name=name,
+               embedding=embedding.copy(),
+               timestamp=current_time,
+               lock_duration=self.lock_duration
+          )
+          self._save_to_disk()
+          return True
+          
+     def unlock_face(self, name: str) -> bool:
+          """Unlock a face by name."""
+          if name in self.locked_faces:
+               del self.locked_faces[name]
+               self._save_to_disk()
+               return True
+          return False
+          
+     def is_locked(self, name: str) -> bool:
+          """Check if a face is currently locked."""
+          if name not in self.locked_faces:
+               return False
+          current_time = time.time()
+          if self.locked_faces[name].is_expired(current_time):
+               del self.locked_faces[name]
+               self._save_to_disk()
+               return False
+          return True
+          
+     def check_and_lock_by_embedding(self, embedding: np.ndarray, current_name: Optional[str] = None) -> Optional[str]:
+          """
+          Check if the embedding matches any locked face.
+          If matched, returns the locked face name and optionally locks the current name.
+          """
+          current_time = time.time()
+          
+          # Remove expired locks
+          expired_names = []
+          for name, locked_face in self.locked_faces.items():
+               if locked_face.is_expired(current_time):
+                    expired_names.append(name)
+          
+          for name in expired_names:
+               del self.locked_faces[name]
+          
+          if expired_names:
+               self._save_to_disk()
+          
+          # Check for matches
+          for name, locked_face in self.locked_faces.items():
+               distance = cosine_distance(embedding, locked_face.embedding)
+               if distance <= self.match_threshold:
+                    # If this is a new name for same person, add it
+                    if current_name and current_name != name:
+                         self.lock_face(current_name, embedding)
+                         print(f"[LockManager] Auto-locked new name '{current_name}' matching locked face '{name}'")
+                         return current_name
+                    return name
+          
+          return None
+          
+     def get_locked_names(self) -> Set[str]:
+          """Get set of currently locked face names."""
+          current_time = time.time()
+          locked_names = set()
+          expired_names = []
+          
+          for name, locked_face in self.locked_faces.items():
+               if locked_face.is_expired(current_time):
+                    expired_names.append(name)
+               else:
+                    locked_names.add(name)
+          
+          for name in expired_names:
+               del self.locked_faces[name]
+          
+          if expired_names:
+               self._save_to_disk()
+          
+          return locked_names
+          
+     def clear_all_locks(self):
+          """Clear all face locks."""
+          self.locked_faces.clear()
+          self._save_to_disk()
+          
+     def _save_to_disk(self):
+          """Save locked faces to disk."""
+          try:
+               self.lock_file_path.parent.mkdir(parents=True, exist_ok=True)
+               data = {}
+               for name, locked_face in self.locked_faces.items():
+                    data[name] = {
+                         'name': locked_face.name,
+                         'embedding': locked_face.embedding.tolist(),
+                         'timestamp': locked_face.timestamp,
+                         'lock_duration': locked_face.lock_duration
+                    }
+               with open(self.lock_file_path, 'w') as f:
+                    json.dump(data, f, indent=2)
+          except Exception as e:
+               print(f"[LockManager] Error saving to disk: {e}")
+               
+     def _load_from_disk(self):
+          """Load locked faces from disk."""
+          if not self.lock_file_path.exists():
+               return
+               
+          try:
+               with open(self.lock_file_path, 'r') as f:
+                    data = json.load(f)
+               
+               current_time = time.time()
+               for name, face_data in data.items():
+                    locked_face = LockedFace(
+                         name=face_data['name'],
+                         embedding=np.array(face_data['embedding'], dtype=np.float32),
+                         timestamp=face_data['timestamp'],
+                         lock_duration=face_data.get('lock_duration', self.lock_duration)
+                    )
+                    # Only load if not expired
+                    if not locked_face.is_expired(current_time):
+                         self.locked_faces[name] = locked_face
+          except Exception as e:
+               print(f"[LockManager] Error loading from disk: {e}")
+               
+     def reload_from_disk(self):
+          """Reload locked faces from disk."""
+          self.locked_faces.clear()
+          self._load_from_disk()
+          print(f"[LockManager] Reloaded {len(self.locked_faces)} locked faces")
+
+
+# -------------------------
 # Demo
 # -------------------------
 
@@ -387,6 +551,10 @@ def main():
      
      db = load_db_npz(db_path)
      matcher = FaceDBMatcher(db=db, dist_thresh=0.34) # from your evaluate_new output
+     
+     # Initialize face lock manager
+     lock_manager = FaceLockManager(lock_duration=300.0, match_threshold=0.3)
+     lock_manager._load_from_disk()  # Load existing locks
      
      # Initialize face tracker
      tracker = FaceTracker(
@@ -401,7 +569,9 @@ def main():
      if not cap.isOpened():
           raise RuntimeError("Camera not available")
      
-     print("Recognize (multi-face with tracking). q=quit, r=reload DB, +/- threshold, d=debug overlay, t=toggle tracking")
+     print("Recognize (multi-face with tracking & persistent locking). q=quit, r=reload DB, +/- threshold, d=debug overlay, t=toggle tracking")
+     print("Locking: l=lock face, u=unlock face, c=clear all locks, L=reload locks")
+     print("Click on a face to select it, then press 'l' to lock it")
 
      t0 = time.time()
      frames = 0
@@ -414,17 +584,17 @@ def main():
      x0 = 0  # Initialize x0 for thumbnail display
      pad = 8 
 
-     locked_face_id = None  # Initialize variable to store the locked face ID
-
+     # Variables for face selection
+     selected_face_index = None
+     
      def on_mouse_click(event, x, y, flags, param):
-          nonlocal locked_face_id
+          nonlocal selected_face_index
           if event == cv2.EVENT_LBUTTONDOWN:
-               for track_id, tracked in tracked_faces_dict.items():
-                    x1, y1, x2, y2 = tracked.bbox
-                    if x1 <= x <= x2 and y1 <= y <= y2:
-                         locked_face_id = track_id
-                         print(f"Locked face ID: {locked_face_id}")
-                         label = "Face locked"
+               # Check if click is on any detected face
+               for i, f in enumerate(faces):
+                    if f.x1 <= x <= f.x2 and f.y1 <= y <= f.y2:
+                         selected_face_index = i
+                         print(f"Selected face {i} for locking")
                          break
 
      cv2.namedWindow("recognize_new")
@@ -448,46 +618,44 @@ def main():
                frames = 0
                t0 = time.time()
 
+          detection_to_track = {}  # Initialize detection_to_track before use
+
           # Update tracker with detections
           if use_tracking:
                # Prepare detections for tracker
                detections = [(f.x1, f.y1, f.x2, f.y2) for f in faces]
                kps_list = [f.kps for f in faces]
-               
+
                # Update tracker
                tracked_faces_dict = tracker.update(detections, kps_list=kps_list)
-               
+
                # Map detections to tracked faces for recognition
-               # Match each detection to its corresponding track
-               detection_to_track = {}
                for i, f in enumerate(faces):
                     det_bbox = (f.x1, f.y1, f.x2, f.y2)
                     det_centroid = ((f.x1 + f.x2) / 2, (f.y1 + f.y2) / 2)
-                    
+
                     # Find closest tracked face
                     best_track_id = None
                     best_dist = float('inf')
-                    
+
                     for track_id, tracked in tracked_faces_dict.items():
                          # Check if this detection matches the tracked bbox
                          track_centroid = tracked.centroid
                          dist = np.sqrt((det_centroid[0] - track_centroid[0])**2 + 
                                       (det_centroid[1] - track_centroid[1])**2)
-                         
+
                          # Also check IoU
                          iou = tracker._compute_iou(det_bbox, tracked.bbox)
-                         
+
                          # Combined score (prefer high IoU and low distance)
                          score = (1.0 - iou) * 0.5 + (dist / 100.0) * 0.5
-                         
+
                          if score < best_dist and dist < 80:  # reasonable threshold
                               best_dist = score
                               best_track_id = track_id
-                    
+
                     if best_track_id is not None:
                          detection_to_track[i] = best_track_id
-          else:
-               tracked_faces_dict = {}
 
           # Recognition: process detections and update tracked faces
           for i, f in enumerate(faces):
@@ -496,6 +664,9 @@ def main():
                emb = embedder.embed(aligned)
                mr = matcher.match(emb)
 
+               # Check if this face matches any locked face (persistent locking)
+               locked_name = lock_manager.check_and_lock_by_embedding(emb, mr.name if mr.accepted else None)
+               
                # Update tracked face with recognition results
                if use_tracking and i in detection_to_track:
                     track_id = detection_to_track[i]
@@ -512,25 +683,20 @@ def main():
                          # Update keypoints from fresh detection
                          tracked.kps = f.kps
 
-               # # Log actions only for the locked face
-               # if use_tracking and locked_face_id is not None and track_id == locked_face_id:
-               #      expression = "smiling" if np.random.rand() > 0.5 else "normal"
-               #      movement = "moved left" if np.random.rand() > 0.5 else "moved right"
-
-               #      if mr.name:
-               #           print(f"Locked face ({mr.name}) is {expression}, {movement}.")
-                         
-               #      else:
-               #           print(f"Locked face (Unknown) is {expression}, {movement}.")
-
-               # Define label before use
-               label = mr.name if mr.name is not None else "Unknown"
-
-               # Determine color for bounding box
-               if use_tracking and locked_face_id is not None and track_id == locked_face_id:
+               # Determine color based on lock status
+               if locked_name:
                     color = (255, 0, 0)  # Blue for locked face
+                    display_name = locked_name
+               elif mr.accepted:
+                    color = (0, 255, 0)  # Green for recognized
+                    display_name = mr.name
                else:
-                    color = (0, 255, 0) if mr.accepted else (0, 0, 255)  # Green for recognized, red for unrecognized
+                    color = (0, 0, 255)  # Red for unknown
+                    display_name = "Unknown"
+
+               # Highlight selected face
+               if selected_face_index == i:
+                    cv2.rectangle(vis, (f.x1-3, f.y1-3), (f.x2+3, f.y2+3), (255, 255, 0), 3)
 
                # Draw bounding box and keypoints
                cv2.rectangle(vis, (f.x1, f.y1), (f.x2, f.y2), color, 2)
@@ -538,9 +704,11 @@ def main():
                     cv2.circle(vis, (int(x), int(y)), 2, color, -1)
 
                # Add label to bounding box
-               line1 = f"{label}"
-               if use_tracking and locked_face_id is not None and track_id == locked_face_id:
-                    line1 += " (Locked)"  # Add "Locked" to the label for the locked face
+               line1 = f"{display_name}"
+               if locked_name:
+                    line1 += " [LOCKED]"
+               if selected_face_index == i:
+                    line1 += " [SELECTED]"
                line2 = f"dist={mr.distance:.3f} sim={mr.similarity:.3f}"
                cv2.putText(vis, line1, (f.x1, max(0, f.y1 - 28)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
                cv2.putText(vis, line2, (f.x1, max(0, f.y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
@@ -548,18 +716,21 @@ def main():
                # aligned preview thumbnails (stack)
                if y0 + thumb <= h and shown < 4:
                     vis[y0:y0 + thumb, x0:x0 + thumb] = aligned
-                    cv2.putText(vis, f"{i+1}:{label}", (x0, y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+                    cv2.putText(vis, f"{i+1}:{display_name}", (x0, y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
                     y0 += thumb + pad
                     shown += 1
 
           h, w = vis.shape[:2]  # Ensure frame dimensions are initialized
 
           # overlay header
+          locked_names = lock_manager.get_locked_names()
           header = f"IDs={len(matcher._names)} thr(dist)={matcher.dist_thresh:.2f}"
           if fps is not None:
                header += f" fps={fps:.1f}"
           if use_tracking:
                header += f" tracks={len(tracked_faces_dict)}"
+          if locked_names:
+               header += f" locked={len(locked_names)}"
 
           cv2.putText(vis, header, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
 
@@ -585,6 +756,41 @@ def main():
                if not use_tracking:
                     tracker.clear()  # Clear tracks when disabling
                print(f"[recognize] tracking: {'ON' if use_tracking else 'OFF'}")
+          elif key == ord("l"):
+               # Lock selected face
+               if selected_face_index is not None and selected_face_index < len(faces):
+                    f = faces[selected_face_index]
+                    aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
+                    emb = embedder.embed(aligned)
+                    mr = matcher.match(emb)
+                    if mr.accepted:
+                         lock_manager.lock_face(mr.name, emb)
+                         print(f"[LockManager] Locked face: {mr.name}")
+                    else:
+                         print(f"[LockManager] Cannot lock unknown face. Face must be recognized first.")
+               else:
+                    print("[LockManager] Please select a recognized face first (click on it)")
+          elif key == ord("u"):
+               # Unlock selected face
+               if selected_face_index is not None and selected_face_index < len(faces):
+                    f = faces[selected_face_index]
+                    aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
+                    emb = embedder.embed(aligned)
+                    mr = matcher.match(emb)
+                    if mr.accepted and lock_manager.is_locked(mr.name):
+                         lock_manager.unlock_face(mr.name)
+                         print(f"[LockManager] Unlocked face: {mr.name}")
+                    else:
+                         print(f"[LockManager] Face {mr.name if mr.accepted else 'Unknown'} is not locked")
+               else:
+                    print("[LockManager] Please select a face first (click on it)")
+          elif key == ord("c"):
+               # Clear all locks
+               lock_manager.clear_all_locks()
+               print("[LockManager] Cleared all locks")
+          elif key == ord("L"):
+               # Reload locks from disk
+               lock_manager.reload_from_disk()
 
      cap.release()
      cv2.destroyAllWindows()
