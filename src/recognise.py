@@ -408,11 +408,18 @@ def main():
      fps: Optional[float] = None
      show_debug = False
      use_tracking = True  # Enable tracking by default
+     y0 = 80  # Initialize y0 at the start of the main function
+     thumb = 112  # Initialize thumbnail size for aligned face previews
+     shown = 0  # Initialize the counter for displayed thumbnails
+     x0 = 0  # Initialize x0 for thumbnail display
+     pad = 8  # Initialize padding between thumbnails
 
      while True:
           ok, frame = cap.read()
           if not ok:
                break
+
+          h, w = frame.shape[:2]  # Initialize frame dimensions immediately after reading the frame
 
           faces = det.detect(frame, max_faces=5)
           vis = frame.copy()
@@ -466,14 +473,6 @@ def main():
           else:
                tracked_faces_dict = {}
 
-          # Process each detection for recognition
-          h, w = vis.shape[:2]
-          thumb = 112
-          pad = 8
-          x0 = w - thumb - pad
-          y0 = 80 # moved down to avoid your text overlay area
-          shown = 0
-
           # Recognition: process detections and update tracked faces
           for i, f in enumerate(faces):
                # align -> embed -> match
@@ -497,62 +496,39 @@ def main():
                          # Update keypoints from fresh detection
                          tracked.kps = f.kps
 
-          # Draw tracked faces (if tracking) or raw detections (if not)
-          if use_tracking:
-               for tracked in tracked_faces_dict.values():
-                    # Draw tracked face with tracking visualization
-                    vis = draw_tracked_face(
-                         vis, tracked,
-                         show_id=True,
-                         show_identity=True,
-                         show_stats=show_debug,
-                         thickness=2,
-                    )
-                    
-                    # Draw additional info if debug
-                    if show_debug:
-                         x1, y1, x2, y2 = tracked.bbox
-                         debug_text = f"age={tracked.age} hits={tracked.hits} conf={tracked.confidence:.2f}"
-                         cv2.putText(vis, debug_text, (x1, y2 + 40),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                    
-                    # Show aligned thumbnail for recognized faces
-                    if tracked.identity and tracked.kps is not None and shown < 4:
-                         aligned, _ = align_face_5pt(frame, tracked.kps, out_size=(112, 112))
-                         if y0 + thumb <= h:
-                              vis[y0:y0 + thumb, x0:x0 + thumb] = aligned
-                              cv2.putText(vis, f"{tracked.track_id}:{tracked.identity}", 
-                                        (x0, y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
-                              y0 += thumb + pad
-                              shown += 1
-          else:
-               # No tracking: draw raw detections
-               for i, f in enumerate(faces):
-                    # align -> embed -> match (if not already done)
-                    aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
-                    emb = embedder.embed(aligned)
-                    mr = matcher.match(emb)
-                    
-                    label = mr.name if mr.name is not None else "Unknown"
-                    color = (0, 255, 0) if mr.accepted else (0, 0, 255)
-                    
-                    # draw bbox + kps
-                    cv2.rectangle(vis, (f.x1, f.y1), (f.x2, f.y2), color, 2)
-                    for (x, y) in f.kps.astype(int):
-                         cv2.circle(vis, (int(x), int(y)), 2, color, -1)
-                    
-                    # label
-                    line1 = f"{label}"
-                    line2 = f"dist={mr.distance:.3f} sim={mr.similarity:.3f}"
-                    cv2.putText(vis, line1, (f.x1, max(0, f.y1 - 28)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-                    cv2.putText(vis, line2, (f.x1, max(0, f.y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                    
-                    # aligned preview thumbnails (stack)
-                    if y0 + thumb <= h and shown < 4:
-                         vis[y0:y0 + thumb, x0:x0 + thumb] = aligned
-                         cv2.putText(vis, f"{i+1}:{label}", (x0, y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
-                         y0 += thumb + pad
-                         shown += 1
+               # Determine expression and movement (mock logic for now)
+               expression = "smiling" if np.random.rand() > 0.5 else "normal"
+               movement = "moved left" if np.random.rand() > 0.5 else "moved right"
+
+               # Log expression and movement
+               if mr.name:
+                    print(f"{mr.name} is {expression}, {movement}.")
+               else:
+                    print(f"Unknown face is {expression}, {movement}.")
+
+               # Draw bounding box and label for unrecognized faces
+               label = mr.name if mr.name is not None else "Unknown"
+               color = (0, 255, 0) if mr.accepted else (0, 0, 255)
+
+               # Draw bounding box and keypoints
+               cv2.rectangle(vis, (f.x1, f.y1), (f.x2, f.y2), color, 2)
+               for (x, y) in f.kps.astype(int):
+                    cv2.circle(vis, (int(x), int(y)), 2, color, -1)
+
+               # Add label to bounding box
+               line1 = f"{label}"
+               line2 = f"dist={mr.distance:.3f} sim={mr.similarity:.3f}"
+               cv2.putText(vis, line1, (f.x1, max(0, f.y1 - 28)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+               cv2.putText(vis, line2, (f.x1, max(0, f.y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+               # aligned preview thumbnails (stack)
+               if y0 + thumb <= h and shown < 4:
+                    vis[y0:y0 + thumb, x0:x0 + thumb] = aligned
+                    cv2.putText(vis, f"{i+1}:{label}", (x0, y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+                    y0 += thumb + pad
+                    shown += 1
+
+          h, w = vis.shape[:2]  # Ensure frame dimensions are initialized
 
           # overlay header
           header = f"IDs={len(matcher._names)} thr(dist)={matcher.dist_thresh:.2f}"

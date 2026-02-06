@@ -11,7 +11,7 @@ structure = {
           "align.py",
           "embed.py",
           "enroll.py",
-          "recognize.py",
+          "recognise.py",
           "evaluate.py",
           "haar_5pt.py",
      ],
