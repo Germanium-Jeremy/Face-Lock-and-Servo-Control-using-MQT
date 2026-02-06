@@ -586,15 +586,27 @@ def main():
 
      # Variables for face selection
      selected_face_index = None
+     selected_face_name = None
+     selected_face_was_present = False
+     frames_since_selected_left = 0
+     notification_text = ""
+     notification_timer = 0
      
      def on_mouse_click(event, x, y, flags, param):
-          nonlocal selected_face_index
+          nonlocal selected_face_index, selected_face_name
           if event == cv2.EVENT_LBUTTONDOWN:
                # Check if click is on any detected face
                for i, f in enumerate(faces):
                     if f.x1 <= x <= f.x2 and f.y1 <= y <= f.y2:
                          selected_face_index = i
-                         print(f"Selected face {i} for locking")
+                         # Get the name of the selected face
+                         aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
+                         emb = embedder.embed(aligned)
+                         mr = matcher.match(emb)
+                         selected_face_name = mr.name if mr.accepted else "Unknown"
+                         selected_face_was_present = True
+                         frames_since_selected_left = 0
+                         print(f"Selected face {i} ({selected_face_name}) for tracking")
                          break
 
      cv2.namedWindow("recognize_new")
@@ -609,6 +621,50 @@ def main():
 
           faces = det.detect(frame, max_faces=5)
           vis = frame.copy()
+
+          # Track selected face presence
+          if selected_face_index is not None:
+               selected_face_present = False
+               found_selected_face = False
+               
+               # Search for the selected face by name among all detected faces
+               for i, f in enumerate(faces):
+                    # Get name of this face to check if it matches our selected face
+                    aligned_check, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
+                    emb_check = embedder.embed(aligned_check)
+                    mr_check = matcher.match(emb_check)
+                    current_face_name = mr_check.name if mr_check.accepted else "Unknown"
+                    
+                    if current_face_name == selected_face_name:
+                         selected_face_index = i  # Update index to current position
+                         selected_face_present = True
+                         found_selected_face = True
+                         break
+               
+               # If selected face was not found, it left the frame
+               if not found_selected_face:
+                    selected_face_present = False
+               
+               # Check if selected face left or returned
+               if selected_face_was_present and not selected_face_present:
+                    # Face just left
+                    notification_text = f"TARGET {selected_face_name} LEFT"
+                    notification_timer = 120  # Show for 2 seconds at 60fps
+                    frames_since_selected_left = 0
+                    print(f"[Target Tracking] {selected_face_name} left camera view")
+               elif not selected_face_was_present and selected_face_present:
+                    # Face just returned
+                    notification_text = f"TARGET {selected_face_name} LOCKED"
+                    notification_timer = 120  # Show for 2 seconds at 60fps
+                    print(f"[Target Tracking] {selected_face_name} returned to camera view")
+               
+               selected_face_was_present = selected_face_present
+               if not selected_face_present:
+                    frames_since_selected_left += 1
+
+          # Update notification timer
+          if notification_timer > 0:
+               notification_timer -= 1
 
           # compute fps
           frames += 1
@@ -683,20 +739,17 @@ def main():
                          # Update keypoints from fresh detection
                          tracked.kps = f.kps
 
-               # Determine color based on lock status
-               if locked_name:
-                    color = (255, 0, 0)  # Blue for locked face
-                    display_name = locked_name
-               elif mr.accepted:
+               # Determine color based on recognition status only
+               if mr.accepted:
                     color = (0, 255, 0)  # Green for recognized
                     display_name = mr.name
                else:
                     color = (0, 0, 255)  # Red for unknown
                     display_name = "Unknown"
 
-               # Highlight selected face
+               # Highlight selected face with yellow bounding box
                if selected_face_index == i:
-                    cv2.rectangle(vis, (f.x1-3, f.y1-3), (f.x2+3, f.y2+3), (255, 255, 0), 3)
+                    cv2.rectangle(vis, (f.x1-3, f.y1-3), (f.x2+3, f.y2+3), (255, 255, 0), 3)  # Yellow for selected
 
                # Draw bounding box and keypoints
                cv2.rectangle(vis, (f.x1, f.y1), (f.x2, f.y2), color, 2)
@@ -733,6 +786,15 @@ def main():
                header += f" locked={len(locked_names)}"
 
           cv2.putText(vis, header, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
+
+          # Display notification text if active
+          if notification_timer > 0:
+               # Draw notification background
+               text_size = cv2.getTextSize(notification_text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 3)[0]
+               text_x = (w - text_size[0]) // 2
+               text_y = h - 50
+               cv2.rectangle(vis, (text_x - 10, text_y - 30), (text_x + text_size[0] + 10, text_y + 10), (0, 0, 0), -1)
+               cv2.putText(vis, notification_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 3)
 
           cv2.imshow("recognize_new", vis)
           key = cv2.waitKey(1) & 0xFF
