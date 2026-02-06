@@ -397,7 +397,7 @@ def main():
           velocity_alpha=0.5,  # smoothing factor for velocity
      )
 
-     cap = cv2.VideoCapture(1)
+     cap = cv2.VideoCapture(2)
      if not cap.isOpened():
           raise RuntimeError("Camera not available")
      
@@ -413,6 +413,21 @@ def main():
      shown = 0  # Initialize the counter for displayed thumbnails
      x0 = 0  # Initialize x0 for thumbnail display
      pad = 8  # Initialize padding between thumbnails
+
+     locked_face_id = None  # Initialize variable to store the locked face ID
+
+     def on_mouse_click(event, x, y, flags, param):
+          nonlocal locked_face_id
+          if event == cv2.EVENT_LBUTTONDOWN:
+               for track_id, tracked in tracked_faces_dict.items():
+                    x1, y1, x2, y2 = tracked.bbox
+                    if x1 <= x <= x2 and y1 <= y <= y2:
+                         locked_face_id = track_id
+                         print(f"Locked face ID: {locked_face_id}")
+                         break
+
+     cv2.namedWindow("recognize_new")
+     cv2.setMouseCallback("recognize_new", on_mouse_click)
 
      while True:
           ok, frame = cap.read()
@@ -496,15 +511,15 @@ def main():
                          # Update keypoints from fresh detection
                          tracked.kps = f.kps
 
-               # Determine expression and movement (mock logic for now)
-               expression = "smiling" if np.random.rand() > 0.5 else "normal"
-               movement = "moved left" if np.random.rand() > 0.5 else "moved right"
+               # Log actions only for the locked face
+               if use_tracking and locked_face_id is not None and track_id == locked_face_id:
+                    expression = "smiling" if np.random.rand() > 0.5 else "normal"
+                    movement = "moved left" if np.random.rand() > 0.5 else "moved right"
 
-               # Log expression and movement
-               if mr.name:
-                    print(f"{mr.name} is {expression}, {movement}.")
-               else:
-                    print(f"Unknown face is {expression}, {movement}.")
+                    if mr.name:
+                         print(f"Locked face ({mr.name}) is {expression}, {movement}.")
+                    else:
+                         print(f"Locked face (Unknown) is {expression}, {movement}.")
 
                # Draw bounding box and label for unrecognized faces
                label = mr.name if mr.name is not None else "Unknown"
