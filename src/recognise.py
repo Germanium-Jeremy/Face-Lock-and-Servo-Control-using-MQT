@@ -397,7 +397,7 @@ def main():
           velocity_alpha=0.5,  # smoothing factor for velocity
      )
 
-     cap = cv2.VideoCapture(2)
+     cap = cv2.VideoCapture(1)
      if not cap.isOpened():
           raise RuntimeError("Camera not available")
      
@@ -412,7 +412,7 @@ def main():
      thumb = 112  # Initialize thumbnail size for aligned face previews
      shown = 0  # Initialize the counter for displayed thumbnails
      x0 = 0  # Initialize x0 for thumbnail display
-     pad = 8  # Initialize padding between thumbnails
+     pad = 8 
 
      locked_face_id = None  # Initialize variable to store the locked face ID
 
@@ -424,6 +424,7 @@ def main():
                     if x1 <= x <= x2 and y1 <= y <= y2:
                          locked_face_id = track_id
                          print(f"Locked face ID: {locked_face_id}")
+                         label = "Face locked"
                          break
 
      cv2.namedWindow("recognize_new")
@@ -511,19 +512,25 @@ def main():
                          # Update keypoints from fresh detection
                          tracked.kps = f.kps
 
-               # Log actions only for the locked face
-               if use_tracking and locked_face_id is not None and track_id == locked_face_id:
-                    expression = "smiling" if np.random.rand() > 0.5 else "normal"
-                    movement = "moved left" if np.random.rand() > 0.5 else "moved right"
+               # # Log actions only for the locked face
+               # if use_tracking and locked_face_id is not None and track_id == locked_face_id:
+               #      expression = "smiling" if np.random.rand() > 0.5 else "normal"
+               #      movement = "moved left" if np.random.rand() > 0.5 else "moved right"
 
-                    if mr.name:
-                         print(f"Locked face ({mr.name}) is {expression}, {movement}.")
-                    else:
-                         print(f"Locked face (Unknown) is {expression}, {movement}.")
+               #      if mr.name:
+               #           print(f"Locked face ({mr.name}) is {expression}, {movement}.")
+                         
+               #      else:
+               #           print(f"Locked face (Unknown) is {expression}, {movement}.")
 
-               # Draw bounding box and label for unrecognized faces
+               # Define label before use
                label = mr.name if mr.name is not None else "Unknown"
-               color = (0, 255, 0) if mr.accepted else (0, 0, 255)
+
+               # Determine color for bounding box
+               if use_tracking and locked_face_id is not None and track_id == locked_face_id:
+                    color = (255, 0, 0)  # Blue for locked face
+               else:
+                    color = (0, 255, 0) if mr.accepted else (0, 0, 255)  # Green for recognized, red for unrecognized
 
                # Draw bounding box and keypoints
                cv2.rectangle(vis, (f.x1, f.y1), (f.x2, f.y2), color, 2)
@@ -532,6 +539,8 @@ def main():
 
                # Add label to bounding box
                line1 = f"{label}"
+               if use_tracking and locked_face_id is not None and track_id == locked_face_id:
+                    line1 += " (Locked)"  # Add "Locked" to the label for the locked face
                line2 = f"dist={mr.distance:.3f} sim={mr.similarity:.3f}"
                cv2.putText(vis, line1, (f.x1, max(0, f.y1 - 28)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
                cv2.putText(vis, line2, (f.x1, max(0, f.y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
