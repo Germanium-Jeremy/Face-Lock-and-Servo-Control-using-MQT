@@ -390,6 +390,122 @@ class FaceDBMatcher:
           )
 
 
+def detect_smile_simple(f: FaceDet) -> bool:
+     """
+     Simple smile detection based on mouth keypoints geometry.
+     Uses the relative position of mouth corners to estimate smile.
+     """
+     if len(f.kps) < 5:
+          return False
+     
+     # Get mouth keypoints (indices 3 and 4 are mouth corners in our 5pt system)
+     left_mouth = f.kps[3]  # left mouth corner
+     right_mouth = f.kps[4]  # right mouth corner
+     nose_tip = f.kps[2]    # nose tip for reference
+     
+     # Calculate mouth width and curvature
+     mouth_width = np.linalg.norm(right_mouth - left_mouth)
+     
+     # Simple heuristic: if mouth is relatively wide compared to nose-mouth distance
+     nose_to_mouth_distance = np.linalg.norm((left_mouth + right_mouth) / 2 - nose_tip)
+     
+     # Smile detected if mouth is wide relative to face proportions
+     if nose_to_mouth_distance > 0:
+          smile_ratio = mouth_width / nose_to_mouth_distance
+          return smile_ratio > 1.5  # Threshold for smile detection
+     
+     return False
+
+# -------------------------
+# Activity Logger for Locked Persons
+# -------------------------
+
+class ActivityLogger:
+     """
+     Logs activities of locked persons to a text file.
+     Tracks movements, expressions, and presence changes.
+     """
+     def __init__(self, log_file_path: str = "data/locked_person_activity.txt"):
+          self.log_file_path = Path(log_file_path)
+          self.log_file_path.parent.mkdir(parents=True, exist_ok=True)
+          
+          # Track previous positions for movement detection
+          self.previous_positions: Dict[str, Tuple[float, float]] = {}
+          self.movement_threshold = 50  # pixels threshold for movement detection
+          
+     def log_activity(self, person_name: str, activity: str):
+          """Log an activity with timestamp to the file."""
+          timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+          log_entry = f"[{timestamp}] {person_name}: {activity}\n"
+          
+          print(f"[DEBUG] Attempting to log: {log_entry.strip()}")
+          print(f"[DEBUG] Log file path: {self.log_file_path}")
+          
+          try:
+               with open(self.log_file_path, 'a', encoding='utf-8') as f:
+                    f.write(log_entry)
+               print(f"[DEBUG] Successfully wrote to log file")
+          except Exception as e:
+               print(f"[ActivityLogger] Error writing to log: {e}")
+          
+          # Also print to console for immediate feedback
+          print(f"[Activity Log] {person_name}: {activity}")
+     
+     def detect_movement(self, person_name: str, current_x: float, current_y: float) -> Optional[str]:
+          """Detect movement direction based on position change."""
+          if person_name not in self.previous_positions:
+               self.previous_positions[person_name] = (current_x, current_y)
+               return None
+          
+          prev_x, prev_y = self.previous_positions[person_name]
+          dx = current_x - prev_x
+          dy = current_y - prev_y
+          
+          # Update previous position
+          self.previous_positions[person_name] = (current_x, current_y)
+          
+          # Check if movement is significant enough
+          if abs(dx) < self.movement_threshold and abs(dy) < self.movement_threshold:
+               return None
+          
+          # Determine primary movement direction
+          if abs(dx) > abs(dy):
+               if dx > 0:
+                    return "moved right"
+               else:
+                    return "moved left"
+          else:
+               if dy > 0:
+                    return "moved down"
+               else:
+                    return "moved up"
+     
+     def log_movement(self, person_name: str, current_x: float, current_y: float):
+          """Log movement if detected."""
+          print(f"[DEBUG] Checking movement for {person_name} at ({current_x:.1f}, {current_y:.1f})")
+          movement = self.detect_movement(person_name, current_x, current_y)
+          if movement:
+               print(f"[DEBUG] Movement detected: {movement}")
+               self.log_activity(person_name, movement)
+          else:
+               print(f"[DEBUG] No significant movement detected")
+     
+     def log_presence_change(self, person_name: str, present: bool):
+          """Log when a person enters or leaves the frame."""
+          if present:
+               self.log_activity(person_name, "returned to camera")
+          else:
+               self.log_activity(person_name, "left camera")
+     
+     def log_expression(self, person_name: str, expression: str):
+          """Log facial expression."""
+          self.log_activity(person_name, f"detected {expression}")
+     
+     def clear_tracking(self, person_name: str):
+          """Clear tracking data for a person."""
+          if person_name in self.previous_positions:
+               del self.previous_positions[person_name]
+
 # -------------------------
 # Face Lock Manager
 # -------------------------
@@ -405,8 +521,9 @@ class FaceLockManager:
           self.locked_faces: Dict[str, LockedFace] = {}  # name -> LockedFace
           self.lock_file_path = Path("data/locked_faces.json")
           
-     def lock_face(self, name: str, embedding: np.ndarray) -> bool:
+     def lock_face(self, name: str, embedding: np.ndarray, logger: Optional[ActivityLogger] = None) -> bool:
           """Lock a face by name and embedding."""
+          print(f"[DEBUG] LockManager: Attempting to lock face '{name}'")
           current_time = time.time()
           self.locked_faces[name] = LockedFace(
                name=name,
@@ -415,13 +532,25 @@ class FaceLockManager:
                lock_duration=self.lock_duration
           )
           self._save_to_disk()
+          
+          print(f"[DEBUG] LockManager: Successfully locked face '{name}'. Total locked faces: {len(self.locked_faces)}")
+          
+          # Log the locking action
+          if logger:
+               logger.log_activity(name, "was locked")
+          
           return True
           
-     def unlock_face(self, name: str) -> bool:
+     def unlock_face(self, name: str, logger: Optional[ActivityLogger] = None) -> bool:
           """Unlock a face by name."""
           if name in self.locked_faces:
                del self.locked_faces[name]
                self._save_to_disk()
+               
+               # Log the unlocking action
+               if logger:
+                    logger.log_activity(name, "was unlocked")
+               
                return True
           return False
           
@@ -436,12 +565,14 @@ class FaceLockManager:
                return False
           return True
           
-     def check_and_lock_by_embedding(self, embedding: np.ndarray, current_name: Optional[str] = None) -> Optional[str]:
+     def check_and_lock_by_embedding(self, embedding: np.ndarray) -> Optional[str]:
           """
           Check if the embedding matches any locked face.
-          If matched, returns the locked face name and optionally locks the current name.
+          If matched, returns the locked face name.
           """
           current_time = time.time()
+          
+          print(f"[DEBUG] LockManager: Checking {len(self.locked_faces)} locked faces")
           
           # Remove expired locks
           expired_names = []
@@ -458,14 +589,13 @@ class FaceLockManager:
           # Check for matches
           for name, locked_face in self.locked_faces.items():
                distance = cosine_distance(embedding, locked_face.embedding)
+               print(f"[DEBUG] LockManager: Comparing with locked '{name}', distance={distance:.3f}, threshold={self.match_threshold}")
                if distance <= self.match_threshold:
-                    # If this is a new name for same person, add it
-                    if current_name and current_name != name:
-                         self.lock_face(current_name, embedding)
-                         print(f"[LockManager] Auto-locked new name '{current_name}' matching locked face '{name}'")
-                         return current_name
+                    print(f"[DEBUG] LockManager: Match found! Returning locked name: {name}")
+                    # Only return the locked face name, don't auto-lock similar faces
                     return name
           
+          print(f"[DEBUG] LockManager: No matches found")
           return None
           
      def get_locked_names(self) -> Set[str]:
@@ -556,16 +686,19 @@ def main():
      lock_manager = FaceLockManager(lock_duration=300.0, match_threshold=0.3)
      lock_manager._load_from_disk()  # Load existing locks
      
+     # Initialize activity logger
+     activity_logger = ActivityLogger()
+     print("[Activity Logger] Started - logging locked person activities to data/locked_person_activity.txt") 
      # Initialize face tracker
      tracker = FaceTracker(
-          max_disappeared=30,  # frames before removing track
-          max_distance=100.0,  # max centroid distance for matching
-          iou_threshold=0.3,  # IoU threshold for matching
-          smooth_alpha=0.7,  # smoothing factor for bbox updates
-          velocity_alpha=0.5,  # smoothing factor for velocity
+          max_disappeared=30,
+          max_distance=100.0,
+          iou_threshold=0.3,
+          smooth_alpha=0.7, 
+          velocity_alpha=0.5,
      )
 
-     cap = cv2.VideoCapture(1)
+     cap = cv2.VideoCapture(2)
      if not cap.isOpened():
           raise RuntimeError("Camera not available")
      
@@ -577,36 +710,32 @@ def main():
      frames = 0
      fps: Optional[float] = None
      show_debug = False
-     use_tracking = True  # Enable tracking by default
-     y0 = 80  # Initialize y0 at the start of the main function
-     thumb = 112  # Initialize thumbnail size for aligned face previews
-     shown = 0  # Initialize the counter for displayed thumbnails
-     x0 = 0  # Initialize x0 for thumbnail display
+     use_tracking = True
+     y0 = 80
+     thumb = 112
+     shown = 0
+     x0 = 0
      pad = 8 
 
      # Variables for face selection
-     selected_face_index = None
-     selected_face_name = None
+     selected_track_id: Optional[int] = None
+     selected_face_name: Optional[str] = None
+     selected_embedding: Optional[np.ndarray] = None
      selected_face_was_present = False
-     frames_since_selected_left = 0
+     re_acquire_threshold = 0.25  # Tighter threshold for re-acquiring selected face on return
      notification_text = ""
      notification_timer = 0
      
+     # For mouse click: temporarily store the clicked detection index
+     clicked_detection_index: Optional[int] = None
+     
      def on_mouse_click(event, x, y, flags, param):
-          nonlocal selected_face_index, selected_face_name
+          nonlocal clicked_detection_index
           if event == cv2.EVENT_LBUTTONDOWN:
                # Check if click is on any detected face
                for i, f in enumerate(faces):
                     if f.x1 <= x <= f.x2 and f.y1 <= y <= f.y2:
-                         selected_face_index = i
-                         # Get the name of the selected face
-                         aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
-                         emb = embedder.embed(aligned)
-                         mr = matcher.match(emb)
-                         selected_face_name = mr.name if mr.accepted else "Unknown"
-                         selected_face_was_present = True
-                         frames_since_selected_left = 0
-                         print(f"Selected face {i} ({selected_face_name}) for tracking")
+                         clicked_detection_index = i
                          break
 
      cv2.namedWindow("recognize_new")
@@ -622,50 +751,6 @@ def main():
           faces = det.detect(frame, max_faces=5)
           vis = frame.copy()
 
-          # Track selected face presence
-          if selected_face_index is not None:
-               selected_face_present = False
-               found_selected_face = False
-               
-               # Search for the selected face by name among all detected faces
-               for i, f in enumerate(faces):
-                    # Get name of this face to check if it matches our selected face
-                    aligned_check, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
-                    emb_check = embedder.embed(aligned_check)
-                    mr_check = matcher.match(emb_check)
-                    current_face_name = mr_check.name if mr_check.accepted else "Unknown"
-                    
-                    if current_face_name == selected_face_name:
-                         selected_face_index = i  # Update index to current position
-                         selected_face_present = True
-                         found_selected_face = True
-                         break
-               
-               # If selected face was not found, it left the frame
-               if not found_selected_face:
-                    selected_face_present = False
-               
-               # Check if selected face left or returned
-               if selected_face_was_present and not selected_face_present:
-                    # Face just left
-                    notification_text = f"TARGET {selected_face_name} LEFT"
-                    notification_timer = 120  # Show for 2 seconds at 60fps
-                    frames_since_selected_left = 0
-                    print(f"[Target Tracking] {selected_face_name} left camera view")
-               elif not selected_face_was_present and selected_face_present:
-                    # Face just returned
-                    notification_text = f"TARGET {selected_face_name} LOCKED"
-                    notification_timer = 120  # Show for 2 seconds at 60fps
-                    print(f"[Target Tracking] {selected_face_name} returned to camera view")
-               
-               selected_face_was_present = selected_face_present
-               if not selected_face_present:
-                    frames_since_selected_left += 1
-
-          # Update notification timer
-          if notification_timer > 0:
-               notification_timer -= 1
-
           # compute fps
           frames += 1
           dt = time.time() - t0
@@ -674,7 +759,9 @@ def main():
                frames = 0
                t0 = time.time()
 
-          detection_to_track = {}  # Initialize detection_to_track before use
+          detection_to_track = {}  # det_index -> track_id
+          track_to_detection = {}  # track_id -> det_index
+          selected_face_index = None  # Current frame's det index for selected
 
           # Update tracker with detections
           if use_tracking:
@@ -685,7 +772,7 @@ def main():
                # Update tracker
                tracked_faces_dict = tracker.update(detections, kps_list=kps_list)
 
-               # Map detections to tracked faces for recognition
+               # Map detections to tracked faces
                for i, f in enumerate(faces):
                     det_bbox = (f.x1, f.y1, f.x2, f.y2)
                     det_centroid = ((f.x1 + f.x2) / 2, (f.y1 + f.y2) / 2)
@@ -695,40 +782,125 @@ def main():
                     best_dist = float('inf')
 
                     for track_id, tracked in tracked_faces_dict.items():
-                         # Check if this detection matches the tracked bbox
+                         # Check distance and IoU
                          track_centroid = tracked.centroid
                          dist = np.sqrt((det_centroid[0] - track_centroid[0])**2 + 
                                       (det_centroid[1] - track_centroid[1])**2)
 
-                         # Also check IoU
                          iou = tracker._compute_iou(det_bbox, tracked.bbox)
 
-                         # Combined score (prefer high IoU and low distance)
+                         # Combined score
                          score = (1.0 - iou) * 0.5 + (dist / 100.0) * 0.5
 
-                         if score < best_dist and dist < 80:  # reasonable threshold
+                         if score < best_dist and dist < 80:
                               best_dist = score
                               best_track_id = track_id
 
                     if best_track_id is not None:
                          detection_to_track[i] = best_track_id
+                         track_to_detection[best_track_id] = i
 
-          # Recognition: process detections and update tracked faces
+          else:
+               # If no tracking, can't reliably select by track_id, fallback or disable selection
+               print("[Warning] Selection requires tracking enabled")
+               selected_track_id = None
+
+          # Handle mouse click: assign selected_track_id if clicked
+          if clicked_detection_index is not None:
+               if use_tracking and clicked_detection_index in detection_to_track:
+                    selected_track_id = detection_to_track[clicked_detection_index]
+                    # Compute name and embedding for selected
+                    f = faces[clicked_detection_index]
+                    aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
+                    emb = embedder.embed(aligned)
+                    mr = matcher.match(emb)
+                    selected_face_name = mr.name if mr.accepted else "Unknown"
+                    selected_embedding = emb
+                    selected_face_was_present = True
+                    print(f"Selected track {selected_track_id} ({selected_face_name})")
+               clicked_detection_index = None
+
+          # If selected_track_id, find current det index
+          if selected_track_id is not None and selected_track_id in track_to_detection:
+               selected_face_index = track_to_detection[selected_track_id]
+
+          # Handle re-acquire if selected disappeared
+          selected_face_present = selected_track_id is not None and selected_track_id in tracked_faces_dict
+
+          if not selected_face_present and selected_embedding is not None:
+               # Try to re-acquire by embedding similarity
+               for i, f in enumerate(faces):
+                    aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
+                    emb = embedder.embed(aligned)
+                    dist = cosine_distance(emb, selected_embedding)
+                    if dist <= re_acquire_threshold:
+                         if use_tracking and i in detection_to_track:
+                              selected_track_id = detection_to_track[i]
+                              selected_face_present = True
+                              selected_face_index = i
+                              print(f"Re-acquired selected face on track {selected_track_id} (dist={dist:.3f})")
+                              break
+
+          # Check if selected face left or returned
+          if selected_face_was_present and not selected_face_present:
+               # Face just left
+               notification_text = f"TARGET {selected_face_name} LEFT"
+               notification_timer = 120  # Show for 2 seconds at 60fps
+               frames_since_selected_left = 0
+               print(f"[Target Tracking] {selected_face_name} left camera view")
+               # Log activity if this person is locked
+               if lock_manager.is_locked(selected_face_name):
+                    activity_logger.log_presence_change(selected_face_name, False)
+          elif not selected_face_was_present and selected_face_present:
+               # Face just returned
+               notification_text = f"TARGET {selected_face_name} LOCKED"
+               notification_timer = 120  # Show for 2 seconds at 60fps
+               print(f"[Target Tracking] {selected_face_name} returned to camera view")
+               # Log activity if this person is locked
+               if lock_manager.is_locked(selected_face_name):
+                    activity_logger.log_presence_change(selected_face_name, True)
+
+          selected_face_was_present = selected_face_present
+
+          # Update notification timer
+          if notification_timer > 0:
+               notification_timer -= 1
+
+          # Recognition loop
+          y0 = 80  # Reset y0 each frame
+          shown = 0
           for i, f in enumerate(faces):
                # align -> embed -> match
                aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
                emb = embedder.embed(aligned)
                mr = matcher.match(emb)
-
+               
                # Check if this face matches any locked face (persistent locking)
-               locked_name = lock_manager.check_and_lock_by_embedding(emb, mr.name if mr.accepted else None)
+               locked_name = lock_manager.check_and_lock_by_embedding(emb)
+               
+               print(f"[DEBUG] Face {i}: mr.name={mr.name if mr.accepted else 'Unknown'}, locked_name={locked_name}")
+               
+               # Log activities for locked persons
+               if locked_name:
+                    print(f"[DEBUG] Locked person detected: {locked_name}")
+                    # Get face center position for movement tracking
+                    face_center_x = (f.x1 + f.x2) / 2
+                    face_center_y = (f.y1 + f.y2) / 2
+                    
+                    # Log movement
+                    activity_logger.log_movement(locked_name, face_center_x, face_center_y)
+                    
+                    # Check for smile
+                    if detect_smile_simple(f):
+                         activity_logger.log_expression(locked_name, "smile")
+               else:
+                    print(f"[DEBUG] No locked person detected for face {i}")
                
                # Update tracked face with recognition results
                if use_tracking and i in detection_to_track:
                     track_id = detection_to_track[i]
                     if track_id in tracked_faces_dict:
                          tracked = tracked_faces_dict[track_id]
-                         # Update identity and stats
                          tracker.update_identity(
                               track_id,
                               mr.name if mr.accepted else None,
@@ -736,46 +908,43 @@ def main():
                               mr.similarity,
                               embedding=emb,
                          )
-                         # Update keypoints from fresh detection
                          tracked.kps = f.kps
 
-               # Determine color based on recognition status only
+               # Color
                if mr.accepted:
-                    color = (0, 255, 0)  # Green for recognized
+                    color = (0, 255, 0)
                     display_name = mr.name
                else:
-                    color = (0, 0, 255)  # Red for unknown
+                    color = (0, 0, 255)
                     display_name = "Unknown"
 
-               # Highlight selected face with yellow bounding box
-               if selected_face_index == i:
-                    cv2.rectangle(vis, (f.x1-3, f.y1-3), (f.x2+3, f.y2+3), (255, 255, 0), 3)  # Yellow for selected
+               # Highlight selected
+               if i == selected_face_index:
+                    cv2.rectangle(vis, (f.x1-3, f.y1-3), (f.x2+3, f.y2+3), (255, 255, 0), 3)
 
-               # Draw bounding box and keypoints
+               # Draw bbox and kps
                cv2.rectangle(vis, (f.x1, f.y1), (f.x2, f.y2), color, 2)
                for (x, y) in f.kps.astype(int):
                     cv2.circle(vis, (int(x), int(y)), 2, color, -1)
 
-               # Add label to bounding box
+               # Label
                line1 = f"{display_name}"
                if locked_name:
                     line1 += " [LOCKED]"
-               if selected_face_index == i:
+               if i == selected_face_index:
                     line1 += " [SELECTED]"
                line2 = f"dist={mr.distance:.3f} sim={mr.similarity:.3f}"
                cv2.putText(vis, line1, (f.x1, max(0, f.y1 - 28)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
                cv2.putText(vis, line2, (f.x1, max(0, f.y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-               # aligned preview thumbnails (stack)
+               # Thumbnail
                if y0 + thumb <= h and shown < 4:
                     vis[y0:y0 + thumb, x0:x0 + thumb] = aligned
                     cv2.putText(vis, f"{i+1}:{display_name}", (x0, y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
                     y0 += thumb + pad
                     shown += 1
 
-          h, w = vis.shape[:2]  # Ensure frame dimensions are initialized
-
-          # overlay header
+          # Header
           locked_names = lock_manager.get_locked_names()
           header = f"IDs={len(matcher._names)} thr(dist)={matcher.dist_thresh:.2f}"
           if fps is not None:
@@ -787,9 +956,8 @@ def main():
 
           cv2.putText(vis, header, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
 
-          # Display notification text if active
+          # Notification
           if notification_timer > 0:
-               # Draw notification background
                text_size = cv2.getTextSize(notification_text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 3)[0]
                text_x = (w - text_size[0]) // 2
                text_y = h - 50
@@ -816,22 +984,26 @@ def main():
           elif key == ord("t"):
                use_tracking = not use_tracking
                if not use_tracking:
-                    tracker.clear()  # Clear tracks when disabling
+                    tracker.clear()
+                    selected_track_id = None
                print(f"[recognize] tracking: {'ON' if use_tracking else 'OFF'}")
           elif key == ord("l"):
                # Lock selected face
+               print(f"[DEBUG] Lock key 'l' pressed!")
                if selected_face_index is not None and selected_face_index < len(faces):
                     f = faces[selected_face_index]
                     aligned, _ = align_face_5pt(frame, f.kps, out_size=(112, 112))
                     emb = embedder.embed(aligned)
                     mr = matcher.match(emb)
                     if mr.accepted:
-                         lock_manager.lock_face(mr.name, emb)
+                         lock_manager.lock_face(mr.name, emb, activity_logger)
                          print(f"[LockManager] Locked face: {mr.name}")
                     else:
                          print(f"[LockManager] Cannot lock unknown face. Face must be recognized first.")
                else:
                     print("[LockManager] Please select a recognized face first (click on it)")
+          elif key == ord("1"):
+               print(f"[DEBUG] Number '1' key pressed - this is not the lock key!")
           elif key == ord("u"):
                # Unlock selected face
                if selected_face_index is not None and selected_face_index < len(faces):
@@ -840,19 +1012,21 @@ def main():
                     emb = embedder.embed(aligned)
                     mr = matcher.match(emb)
                     if mr.accepted and lock_manager.is_locked(mr.name):
-                         lock_manager.unlock_face(mr.name)
+                         lock_manager.unlock_face(mr.name, activity_logger)
                          print(f"[LockManager] Unlocked face: {mr.name}")
                     else:
                          print(f"[LockManager] Face {mr.name if mr.accepted else 'Unknown'} is not locked")
                else:
                     print("[LockManager] Please select a face first (click on it)")
           elif key == ord("c"):
-               # Clear all locks
                lock_manager.clear_all_locks()
                print("[LockManager] Cleared all locks")
           elif key == ord("L"):
-               # Reload locks from disk
                lock_manager.reload_from_disk()
+
+          # If selected disappeared and not re-acquired, clear selection
+          if not selected_face_present:
+               selected_track_id = None
 
      cap.release()
      cv2.destroyAllWindows()
