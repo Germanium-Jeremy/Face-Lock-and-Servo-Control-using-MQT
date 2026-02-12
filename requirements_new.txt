@@ -1,0 +1,24 @@
+# Core dependencies
+numpy>=1.21.0
+opencv-python>=4.5.0
+onnxruntime>=1.8.0
+mediapipe>=0.8.0
+
+# MQTT client
+paho-mqtt>=1.6.0
+
+# Web dashboard (optional)
+flask>=2.0.0
+flask-socketio>=5.0.0
+
+# Data handling
+pathlib
+dataclasses
+typing
+
+# Hardware requirements for ESP8266 (Arduino IDE)
+# Install ESP8266 board manager in Arduino IDE
+# Additional libraries:
+# - PubSubClient (by Nick O'Leary)
+# - ESP8266WiFi (built-in)
+# - Servo (built-in)
