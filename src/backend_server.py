@@ -6,7 +6,7 @@ import paho.mqtt.client as mqtt
 # Configuration
 MQTT_BROKER = "localhost"
 MQTT_PORT = 1883
-MQTT_TOPIC = "vision/Germany/#"
+MQTT_TOPIC = "vision/Phoenix_Team/#"
 WS_PORT = 9002
 
 connected_clients = set()

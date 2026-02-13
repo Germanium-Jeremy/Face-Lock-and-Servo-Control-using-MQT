@@ -66,7 +66,7 @@ def main():
     )
 
     # Initialize MQTT Manager
-    team_id = "Phoenix_team" # Change as needed
+    team_id = "Phoenix_Team" # Change as needed
     mqtt_manager = MQTTManager(team_id=team_id)
     last_heartbeat = 0
     heartbeat_interval = 5.0 # seconds
@@ -126,8 +126,8 @@ def main():
         if event == cv2.EVENT_LBUTTONDOWN:
             last_click_pos = (x, y)
 
-    cv2.namedWindow("recognize_new")
-    cv2.setMouseCallback("recognize_new", on_mouse_click_simple)
+    cv2.namedWindow("FaceLock")
+    cv2.setMouseCallback("FaceLock", on_mouse_click_simple)
 
     while True:
          if not cap.isOpened(): break
@@ -286,7 +286,7 @@ def main():
          else:
               mqtt_manager.publish_movement("NO_FACE", confidence=0.0)
 
-         cv2.imshow("recognize_new", vis)
+         cv2.imshow("FaceLock", vis)
          key = cv2.waitKey(1) & 0xFF
          
          if key == ord('q'): 
