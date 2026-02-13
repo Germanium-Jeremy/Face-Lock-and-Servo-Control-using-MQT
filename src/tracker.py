@@ -15,7 +15,7 @@ import cv2
 class TrackedFace:
     """Represents a tracked face with its history."""
     track_id: int
-    bbox: Tuple[int, int, int, int]  # (x1, y1, x2, y2)
+    bbox: Tuple[int, int, it, int]  # (x1, y1, x2, y2)
     centroid: Tuple[float, float]  # (cx, cy)
     age: int  # frames since first detection
     hits: int  # number of successful matches
@@ -27,6 +27,13 @@ class TrackedFace:
     identity: Optional[str] = None  # recognized identity name
     match_distance: float = 1.0  # last match distance
     match_similarity: float = 0.0  # last match similarity
+
+    def update_identity(self, identity: Optional[str], distance: float, similarity: float, embedding: Optional[np.ndarray] = None):
+        self.identity = identity
+        self.match_distance = distance
+        self.match_similarity = similarity
+        if embedding is not None:
+            self.embedding = embedding
 
 
 class FaceTracker:
@@ -244,21 +251,7 @@ class FaceTracker:
         
         return self.tracked_faces.copy()
     
-    def update_identity(
-        self,
-        track_id: int,
-        identity: Optional[str],
-        distance: float,
-        similarity: float,
-        embedding: Optional[np.ndarray] = None,
-    ):
-        """Update identity information for a tracked face."""
-        if track_id in self.tracked_faces:
-            self.tracked_faces[track_id].identity = identity
-            self.tracked_faces[track_id].match_distance = distance
-            self.tracked_faces[track_id].match_similarity = similarity
-            if embedding is not None:
-                self.tracked_faces[track_id].embedding = embedding
+
     
     def get_track(self, track_id: int) -> Optional[TrackedFace]:
         """Get tracked face by ID."""

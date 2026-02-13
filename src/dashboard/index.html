@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Tracking Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent-color: #3b82f6;
+            --success-color: #22c55e;
+            --warning-color: #eab308;
+            --danger-color: #ef4444;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-image: radial-gradient(circle at 50% 50%, #1e293b 0%, #0f172a 100%);
+        }
+
+        .container {
+            width: 90%;
+            max_width: 1200px;
+            margin-top: 2rem;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .header {
+            width: 100%;
+            text-align: center;
+            padding: 2rem 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(15, 23, 42, 0.8);
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 2.5rem;
+            background: linear-gradient(to right, #60a5fa, #3b82f6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 1rem;
+            padding: 1.5rem;
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            transition: transform 0.2s;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+        }
+
+        .status-online { background-color: var(--success-color); box-shadow: 0 0 10px var(--success-color); }
+        .status-offline { background-color: var(--danger-color); }
+        .status-connecting { background-color: var(--warning-color); }
+
+        .metric {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+        }
+
+        .value {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .movement-display {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 150px;
+            font-size: 3rem;
+            color: var(--accent-color);
+        }
+
+        .log-container {
+            grid-column: 1 / -1;
+            max-height: 300px;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            font-family: monospace;
+            font-size: 0.9rem;
+        }
+
+        .log-entry {
+            margin-bottom: 0.25rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: 0.25rem;
+        }
+        
+        .ts { color: var(--text-secondary); margin-right: 1rem; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Face Tracking System</h1>
+        <p style="color: var(--text-secondary);">Using MQTT & WebSockets</p>
+    </div>
+
+    <div class="container">
+        <!-- Connection Status -->
+        <div class="card">
+            <h3>System Status</h3>
+            <div class="metric">
+                WebSocket: <span id="ws-status" class="value" style="font-size: 1rem;">Disconnected</span>
+                <span id="ws-indicator" class="status-indicator status-offline"></span>
+            </div>
+            <div class="metric">
+                Team ID: <span class="value" style="font-size: 1.2rem;">Germany</span>
+            </div>
+            <div class="metric">
+                Last Heartbeat: <span id="last-heartbeat" class="value" style="font-size: 1.2rem;">-</span>
+            </div>
+        </div>
+
+        <!-- Movement Status -->
+        <div class="card">
+            <h3>Tracking Command</h3>
+            <div id="movement-icon" class="movement-display">
+                <span id="movement-text">WAITING</span>
+            </div>
+            <div style="text-align: center; margin-top: 1rem;">
+                <span class="metric">Confidence: </span>
+                <span id="confidence-val" class="value" style="font-size: 1rem;">0%</span>
+            </div>
+        </div>
+
+        <!-- Logs -->
+        <div class="card log-container" id="log-box">
+            <div class="log-entry"><span class="ts">System</span> Ready to connect...</div>
+        </div>
+    </div>
+
+    <script>
+        const wsUrl = 'ws://157.173.101.159:9002';
+        let socket;
+        const logBox = document.getElementById('log-box');
+        const movementText = document.getElementById('movement-text');
+        const movementIcon = document.getElementById('movement-icon');
+        const wsStatus = document.getElementById('ws-status');
+        const wsIndicator = document.getElementById('ws-indicator');
+        const lastHb = document.getElementById('last-heartbeat');
+        const confVal = document.getElementById('confidence-val');
+
+        function connect() {
+            log("System", "Connecting to WebSocket...");
+            wsStatus.textContent = "Connecting...";
+            wsIndicator.className = "status-indicator status-connecting";
+
+            socket = new WebSocket(wsUrl);
+
+            socket.onopen = () => {
+                log("WS", "Connected");
+                wsStatus.textContent = "Multi-device Connected"; // Requirement mentioned "Multi-device" implicitly via websocket broadcast
+                wsStatus.textContent = "Connected";
+                wsIndicator.className = "status-indicator status-online";
+            };
+
+            socket.onclose = () => {
+                log("WS", "Disconnected. Retrying in 3s...");
+                wsStatus.textContent = "Disconnected";
+                wsIndicator.className = "status-indicator status-offline";
+                setTimeout(connect, 3000);
+            };
+
+            socket.onerror = (error) => {
+                log("WS", "Error detected");
+                console.error("WebSocket Error:", error);
+            };
+
+            socket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleMessage(data);
+                } catch (e) {
+                    console.error("JSON Parse Error:", e);
+                }
+            };
+        }
+
+        function handleMessage(data) {
+            // Data could be the MQTT payload directly or wrapped.
+            // Assuming structure matches what we send in Python:
+            // topic: "vision/Germany/movement" -> payload: {status:..., ...}
+            
+            // If the backend forwards the whole MQTT packet structure:
+            // data = { topic: "...", payload: "..." }
+            
+            // Or if it just forwards the payload. Let's inspect 'data'.
+            // For safety, I'll log it first time.
+            
+            console.log("Received:", data);
+
+            // Check if it's our team
+            // If topic is included
+            if (data.topic && !data.topic.includes("Germany")) return; 
+
+            // Extract payload
+            let payload = data;
+            if (data.payload) {
+                if (typeof data.payload === 'string') {
+                    try { payload = JSON.parse(data.payload); } catch(e) {}
+                } else {
+                    payload = data.payload;
+                }
+            }
+
+            // Heuristic to detect message type
+            if (payload.status && (payload.status.startsWith("MOVE") || payload.status === "CENTER" || payload.status === "NO_LOCK" || payload.status === "NO_FACE")) {
+                updateMovement(payload);
+            } else if (payload.node === "pc" && payload.status === "ONLINE") {
+                updateHeartbeat(payload);
+            }
+        }
+
+        function updateMovement(payload) {
+            const status = payload.status;
+            movementText.textContent = status;
+            confVal.textContent = (payload.confidence * 100).toFixed(0) + "%";
+            
+            let icon = "";
+            if (status === "MOVE_LEFT") icon = "⬅️";
+            else if (status === "MOVE_RIGHT") icon = "➡️";
+            else if (status === "CENTER") icon = "🎯";
+            else if (status === "NO_LOCK") icon = "🔍";
+            else if (status === "NO_FACE") icon = "🚫";
+            
+            movementIcon.innerHTML = `<span style="font-size: 4rem;">${icon}</span><br><span style="font-size: 1.5rem;">${status}</span>`;
+            
+            log("Movement", `${status} (Conf: ${payload.confidence})`);
+        }
+
+        function updateHeartbeat(payload) {
+            const date = new Date(payload.timestamp * 1000);
+            lastHb.textContent = date.toLocaleTimeString();
+            // log("Heartbeat", "PC Online");
+        }
+
+        function log(source, msg) {
+            const div = document.createElement('div');
+            div.className = 'log-entry';
+            const time = new Date().toLocaleTimeString();
+            div.innerHTML = `<span class="ts">[${time}] ${source}:</span> ${msg}`;
+            logBox.prepend(div);
+            // Keep log size checking?
+        }
+
+        connect();
+    </script>
+</body>
+</html>
