@@ -35,7 +35,12 @@ async def broadcast_message(message):
 
 # WebSocket Handler
 async def handler(websocket):
-    print(f"[WS] Client connected: {websocket.remote_address}")
+    # Check for specific path
+    if websocket.path != "/vision/Phoenix_Team":
+        print(f"[WS] Rejected connection from {websocket.remote_address} on path {websocket.path}")
+        return
+
+    print(f"[WS] Client connected: {websocket.remote_address} on {websocket.path}")
     connected_clients.add(websocket)
     try:
         await websocket.wait_closed()
