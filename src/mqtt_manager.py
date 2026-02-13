@@ -9,7 +9,7 @@ except ImportError:
     print("WARNING: paho-mqtt not installed. Run: pip install paho-mqtt")
 
 class MQTTManager:
-    def __init__(self, broker: str = "157.173.101.159", port: int = 1883, team_id: str = "default_team"):
+    def __init__(self, broker: str = "localhost", port: int = 1883, team_id: str = "default_team"):
         self.broker = broker
         self.port = port
         self.team_id = team_id
