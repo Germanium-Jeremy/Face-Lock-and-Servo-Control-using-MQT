@@ -66,7 +66,7 @@ def main():
     )
 
     # Initialize MQTT Manager
-    team_id = "Germany" # Change as needed
+    team_id = "Phoenix_team" # Change as needed
     mqtt_manager = MQTTManager(team_id=team_id)
     last_heartbeat = 0
     heartbeat_interval = 5.0 # seconds
@@ -278,7 +278,7 @@ def main():
               elif cx > center_x + deadzone_x:
                    status = "MOVE_RIGHT"
               
-              mqtt_manager.publish_movement(status, confidence=1.0)
+              mqtt_manager.publish_movement(status, confidence=1.0, face_name=locked_name)
               cv2.putText(vis, f"SERVO: {status}", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
               
          elif has_faces:

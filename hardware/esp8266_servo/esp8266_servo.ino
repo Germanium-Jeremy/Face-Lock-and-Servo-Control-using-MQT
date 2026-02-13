@@ -10,7 +10,7 @@ int stepSize = 5;
 const char* ssid = "RCA-OUTDOOR";
 const char* password = "RCA@2025";
 
-const char* mqtt_server = "10.12.75.194";
+const char* mqtt_server = "10.12.74.5";
 const int mqtt_port = 1883;
 const char* mqtt_topic_sub = "vision/Germany/movement";
 

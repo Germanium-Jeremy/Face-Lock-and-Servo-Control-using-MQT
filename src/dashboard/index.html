@@ -249,6 +249,7 @@
 
         function updateMovement(payload) {
             const status = payload.status;
+            const name = payload.face_name || "Unknown";
             movementText.textContent = status;
             confVal.textContent = (payload.confidence * 100).toFixed(0) + "%";
             
@@ -259,9 +260,9 @@
             else if (status === "NO_LOCK") icon = "🔍";
             else if (status === "NO_FACE") icon = "🚫";
             
-            movementIcon.innerHTML = `<span style="font-size: 4rem;">${icon}</span><br><span style="font-size: 1.5rem;">${status}</span>`;
+            movementIcon.innerHTML = `<span style="font-size: 4rem;">${icon}</span><br><span style="font-size: 1.5rem;">${status}</span><br><span style="font-size: 1.2rem; color: var(--text-secondary);">${name}</span>`;
             
-            log("Movement", `${status} (Conf: ${payload.confidence})`);
+            log("Movement", `${status} (Name: ${name}, Conf: ${payload.confidence})`);
         }
 
         function updateHeartbeat(payload) {
