@@ -28,6 +28,10 @@ class TrackedFace:
     match_distance: float = 1.0  # last match distance
     match_similarity: float = 0.0  # last match similarity
 
+    @property
+    def label(self):
+        return self.identity
+
     def update_identity(self, identity: Optional[str], distance: float, similarity: float, embedding: Optional[np.ndarray] = None):
         self.identity = identity
         self.match_distance = distance

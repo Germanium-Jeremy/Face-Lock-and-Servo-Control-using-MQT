@@ -15,7 +15,7 @@ struct WiFiNetwork {
 WiFiNetwork networks[] = {
   {"RCA-OUTDOOR", "RCA@2025"},
   {"EdNet", "Huawei@123"},
-  {"Main Hall", "Meeting@2024"},
+  {"Main Hall", "Meeting@2024"},  
   {"GROUND", "RCA@2024"},
   {"RCA-OFFICE", "RCA@2024"}
 };

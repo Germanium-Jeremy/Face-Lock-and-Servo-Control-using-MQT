@@ -38,7 +38,7 @@ except Exception as e:
 # Reuse your known-good alignment method
 from .haar_5pt import align_face_5pt
 from .tracker import FaceTracker, draw_tracked_face
-
+from .mqtt_manager import MQTTManager
 
 # -------------------------
 # Data
@@ -163,8 +163,8 @@ class ArcFaceEmbedderONNX:
 
           if self.debug:
                print("[embed] model:", model_path)
-               print("[embed] input:", self.sess.get_inputs()[0].name, self.sess.get.inputs()[0].shape, self.sess.get.inputs()[0].type)
-               print("[embed] output:", self.sess.get.outputs()[0].name, self.sess.get.outputs()[0].shape, self.sess.get.outputs()[0].type)
+               print("[embed] input:", self.sess.get.inputs()[0].shape, self.sess.get.inputs()[0].type)
+               print("[embed] output:", self.sess.get.outputs()[0].shape, self.sess.get.outputs()[0].type)
 
      def _preprocess(self, aligned_bgr_112: np.ndarray) -> np.ndarray:
           img = aligned_bgr_112
@@ -397,29 +397,6 @@ def main():
           velocity_alpha=0.5,  # smoothing factor for velocity
      )
 
-     # Servo motor communication setup
-     # Adjust port and baudrate as needed
-     try:
-         servo_serial = serial.Serial('COM3', 9600, timeout=1)  # Example port
-     except Exception as e:
-         servo_serial = None
-         print(f"[SERVO] Serial connection failed: {e}")
-
-     servo_angle = 90  # Start at center
-     servo_search_direction = 1  # 1 for right, -1 for left
-     servo_search_speed = 1  # Degrees per frame for searching
-     servo_smooth_factor = 0.2  # Smoothing factor for movement
-     servo_min_angle = 0
-     servo_max_angle = 180
-
-     def send_servo_angle(angle):
-         if servo_serial:
-             angle = int(max(servo_min_angle, min(servo_max_angle, angle)))
-             try:
-                 servo_serial.write(f"{angle}\n".encode())
-             except Exception as e:
-                 print(f"[SERVO] Failed to send angle: {e}")
-
      cap = cv2.VideoCapture(1)
      if not cap.isOpened():
           raise RuntimeError("Camera not available")
@@ -452,6 +429,15 @@ def main():
      cv2.namedWindow("recognize_new")
      cv2.setMouseCallback("recognize_new", on_mouse_click)
 
+     mqtt_manager = MQTTManager()
+     servo_angle = 0.0  # Current angle (can be any value, not limited to 180)
+     servo_target_angle = 0.0
+     servo_speed = 2.0  # degrees per update (smoothness)
+     searching = False
+     search_direction = 1  # 1 for right, -1 for left
+     search_pause = 0
+     search_pause_frames = 20  # Pause for a moment when changing direction
+
      while True:
           ok, frame = cap.read()
           if not ok:
@@ -471,14 +457,29 @@ def main():
                t0 = time.time()
 
           # Update tracker with detections
+          detection_to_track = {}  # Ensure this is initialized every frame
           if use_tracking:
                # Prepare detections for tracker
                detections = [(f.x1, f.y1, f.x2, f.y2) for f in faces]
                kps_list = [f.kps for f in faces]
-
                # Update tracker
                tracked_faces_dict = tracker.update(detections, kps_list=kps_list)
-
+               # Map detections to tracked faces for recognition
+               for i, f in enumerate(faces):
+                    det_bbox = (f.x1, f.y1, f.x2, f.y2)
+                    det_centroid = ((f.x1 + f.x2) / 2, (f.y1 + f.y2) / 2)
+                    best_track_id = None
+                    best_dist = float('inf')
+                    for track_id, tracked in tracked_faces_dict.items():
+                         track_centroid = tracked.centroid
+                         dist = np.sqrt((det_centroid[0] - track_centroid[0])**2 + (det_centroid[1] - track_centroid[1])**2)
+                         iou = tracker._compute_iou(det_bbox, tracked.bbox)
+                         score = (1.0 - iou) * 0.5 + (dist / 100.0) * 0.5
+                         if score < best_dist and dist < 80:
+                              best_dist = score
+                              best_track_id = track_id
+                    if best_track_id is not None:
+                         detection_to_track[i] = best_track_id
           else:
                tracked_faces_dict = {}
 
