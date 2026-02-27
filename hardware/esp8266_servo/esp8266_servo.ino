@@ -7,34 +7,12 @@ int servoPin = D5;     // try D5 first
 int currentAngle = 90;
 int stepSize = 5;
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-struct WiFiNetwork {
-  const char* ssid;
-  const char* password;
-};
-
-WiFiNetwork networks[] = {
-  {"RCA-OUTDOOR", "RCA@2025"},
-  {"EdNet", "Huawei@123"},
-  {"Main Hall", "Meeting@2024"},  
-  {"GROUND", "RCA@2024"},
-  {"RCA-OFFICE", "RCA@2024"}
-};
-
-int currentNetwork = 0;
-=======
 const char* ssid = "RCA-OUTDOOR";
 const char* password = "RCA@2025";
->>>>>>> parent of 0569526 (enabled multi-wifi on the servo)
-=======
-const char* ssid = "RCA-OUTDOOR";
-const char* password = "RCA@2025";
->>>>>>> parent of 0569526 (enabled multi-wifi on the servo)
 
-const char* mqtt_server = "10.12.74.5";
+const char* mqtt_server = "157.173.101.159";
 const int mqtt_port = 1883;
-const char* mqtt_topic_sub = "vision/Germany/movement";
+const char* mqtt_topic_sub = "vision/Phoenix_Team/movement";
 
 WiFiClient espClient;
 PubSubClient client(espClient);

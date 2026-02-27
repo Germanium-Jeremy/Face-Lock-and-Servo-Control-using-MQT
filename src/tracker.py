@@ -15,7 +15,7 @@ import cv2
 class TrackedFace:
     """Represents a tracked face with its history."""
     track_id: int
-    bbox: Tuple[int, int, it, int]  # (x1, y1, x2, y2)
+    bbox: Tuple[int, int, int, int]  # (x1, y1, x2, y2)
     centroid: Tuple[float, float]  # (cx, cy)
     age: int  # frames since first detection
     hits: int  # number of successful matches
