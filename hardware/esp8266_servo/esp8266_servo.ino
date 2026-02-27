@@ -12,7 +12,7 @@ const char* password = "RCA@2025";
 
 const char* mqtt_server = "157.173.101.159";
 const int mqtt_port = 1883;
-const char* mqtt_topic_sub = "vision/Phoenix_Team/movement";
+const char* mqtt_topic_sub = "vision/Phoenix_team/movement";
 
 WiFiClient espClient;
 PubSubClient client(espClient);

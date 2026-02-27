@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
+from .mqtt_manager import MQTTManager
 import onnxruntime as ort
 try:
      import mediapipe as mp
@@ -397,28 +398,11 @@ def main():
           velocity_alpha=0.5,  # smoothing factor for velocity
      )
 
-     # Servo motor communication setup
-     # Adjust port and baudrate as needed
-     try:
-         servo_serial = serial.Serial('COM3', 9600, timeout=1)  # Example port
-     except Exception as e:
-         servo_serial = None
-         print(f"[SERVO] Serial connection failed: {e}")
-
-     servo_angle = 90  # Start at center
-     servo_search_direction = 1  # 1 for right, -1 for left
-     servo_search_speed = 1  # Degrees per frame for searching
-     servo_smooth_factor = 0.2  # Smoothing factor for movement
-     servo_min_angle = 0
-     servo_max_angle = 180
-
-     def send_servo_angle(angle):
-         if servo_serial:
-             angle = int(max(servo_min_angle, min(servo_max_angle, angle)))
-             try:
-                 servo_serial.write(f"{angle}\n".encode())
-             except Exception as e:
-                 print(f"[SERVO] Failed to send angle: {e}")
+     # Initialize MQTT Manager
+     team_id = "Phoenix_team"
+     mqtt_manager = MQTTManager(team_id=team_id)
+     last_heartbeat = 0
+     heartbeat_interval = 5.0 # seconds
 
      cap = cv2.VideoCapture(1)
      if not cap.isOpened():
@@ -470,6 +454,9 @@ def main():
                frames = 0
                t0 = time.time()
 
+          detection_to_track = {}
+          track_to_detection = {}
+
           # Update tracker with detections
           if use_tracking:
                # Prepare detections for tracker
@@ -479,9 +466,30 @@ def main():
                # Update tracker
                tracked_faces_dict = tracker.update(detections, kps_list=kps_list)
 
+               for i, f in enumerate(faces):
+                    det_bbox = (f.x1, f.y1, f.x2, f.y2)
+                    det_centroid = ((f.x1 + f.x2) / 2, (f.y1 + f.y2) / 2)
+                    best_track_id = None
+                    best_dist = float('inf')
+
+                    for track_id, tracked in tracked_faces_dict.items():
+                         track_centroid = tracked.centroid
+                         dist = np.sqrt((det_centroid[0] - track_centroid[0])**2 + 
+                                      (det_centroid[1] - track_centroid[1])**2)
+                         # Simple distance based association, IoU can also be added here if needed
+                         if dist < best_dist and dist < 80:
+                              best_dist = dist
+                              best_track_id = track_id
+
+                    if best_track_id is not None:
+                         detection_to_track[i] = best_track_id
+                         track_to_detection[best_track_id] = i
+
           else:
                tracked_faces_dict = {}
 
+          locked_cx = None
+          
           # Recognition: process detections and update tracked faces
           for i, f in enumerate(faces):
                # align -> embed -> match
@@ -496,7 +504,6 @@ def main():
                          tracked = tracked_faces_dict[track_id]
                          # Update identity and stats
                          tracked.update_identity(
-                              track_id,
                               mr.name if mr.accepted else None,
                               mr.distance,
                               mr.similarity,
@@ -508,6 +515,7 @@ def main():
                # Ensure locked face remains locked using label
                if use_tracking and locked_face_label is not None and mr.name == locked_face_label:
                     color = (255, 0, 0)  # Blue for locked face
+                    locked_cx = (f.x1 + f.x2) / 2
                else:
                     color = (0, 255, 0) if mr.accepted else (0, 0, 255)
 
@@ -530,6 +538,40 @@ def main():
                     cv2.putText(vis, f"{i+1}:{mr.name if mr.name else 'Unknown'}", (x0, y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
                     y0 += thumb + pad
                     shown += 1
+
+          # --- MQTT Servo Control Logic ---
+          current_time = time.time()
+          if current_time - last_heartbeat >= heartbeat_interval:
+               mqtt_manager.publish_heartbeat()
+               last_heartbeat = current_time
+
+          if use_tracking and locked_face_label is not None:
+               if locked_cx is not None:
+                    # Face is currently detected and mapped
+                    center_x = w / 2
+                    deadzone_x = 50
+                    if locked_cx < center_x - deadzone_x:
+                         status = "MOVE_LEFT"
+                    elif locked_cx > center_x + deadzone_x:
+                         status = "MOVE_RIGHT"
+                    else:
+                         status = "CENTER"
+                    mqtt_manager.publish_movement(status, confidence=1.0, face_name=locked_face_label)
+                    cv2.putText(vis, f"SERVO: {status} (TRACKING)", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+               else:
+                    # Face is locked but NOT found in current frame
+                    # Search mode: sweeping back and forth every 4 seconds
+                    sweep_cycle = int(current_time) % 8
+                    status = "MOVE_LEFT" if sweep_cycle < 4 else "MOVE_RIGHT"
+                    
+                    mqtt_manager.publish_movement(status, confidence=0.0, face_name=f"SEARCHING {locked_face_label}")
+                    cv2.putText(vis, f"SERVO: {status} (SEARCHING)", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+          else:
+               # No face locked
+               if len(faces) > 0:
+                    mqtt_manager.publish_movement("NO_LOCK", confidence=0.0)
+               else:
+                    mqtt_manager.publish_movement("NO_FACE", confidence=0.0)
 
           h, w = vis.shape[:2]  # Ensure frame dimensions are initialized
 

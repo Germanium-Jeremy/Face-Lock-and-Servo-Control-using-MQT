@@ -6,7 +6,7 @@ import paho.mqtt.client as mqtt
 # Configuration
 MQTT_BROKER = "157.173.101.159"
 MQTT_PORT = 1883
-MQTT_TOPIC = "vision/Phoenix_Team/#"
+MQTT_TOPIC = "vision/Phoenix_team/#"
 WS_PORT = 9002
 
 connected_clients = set()
@@ -36,7 +36,7 @@ async def broadcast_message(message):
 # WebSocket Handler
 async def handler(websocket):
     # Check for specific path
-    if websocket.path != "/vision/Phoenix_Team":
+    if websocket.path != "/vision/Phoenix_team":
         print(f"[WS] Rejected connection from {websocket.remote_address} on path {websocket.path}")
         return
 
