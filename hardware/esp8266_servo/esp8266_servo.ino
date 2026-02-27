@@ -8,6 +8,7 @@ int currentAngle = 90;
 int stepSize = 5;
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 struct WiFiNetwork {
   const char* ssid;
   const char* password;
@@ -22,6 +23,10 @@ WiFiNetwork networks[] = {
 };
 
 int currentNetwork = 0;
+=======
+const char* ssid = "RCA-OUTDOOR";
+const char* password = "RCA@2025";
+>>>>>>> parent of 0569526 (enabled multi-wifi on the servo)
 =======
 const char* ssid = "RCA-OUTDOOR";
 const char* password = "RCA@2025";
