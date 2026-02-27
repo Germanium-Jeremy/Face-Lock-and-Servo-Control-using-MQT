@@ -2,7 +2,7 @@
 Servo s;
 
 void setup() {
-  s.attach(D4);
+  s.attach(D5);
 }
 
 void loop() {

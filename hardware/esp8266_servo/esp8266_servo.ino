@@ -22,9 +22,9 @@ WiFiNetwork networks[] = {
 
 int currentNetwork = 0;
 
-const char* mqtt_server = "157.173.101.159";
+const char* mqtt_server = "10.12.74.5";
 const int mqtt_port = 1883;
-const char* mqtt_topic_sub = "vision/Phoenix_Team/movement";
+const char* mqtt_topic_sub = "vision/Germany/movement";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
