@@ -240,7 +240,8 @@
             }
 
             // Heuristic to detect message type
-            if (payload.status && (payload.status.startsWith("MOVE") || payload.status === "CENTER" || payload.status === "NO_LOCK" || payload.status === "NO_FACE")) {
+            const st = payload.status;
+            if (st && (st.startsWith("MOVE") || st === "CENTER" || st === "NO_LOCK" || st === "NO_FACE" || st === "TRACKING" || st === "SEARCHING" || st === "WAITING")) {
                 updateMovement(payload);
             } else if (payload.node === "pc" && payload.status === "ONLINE") {
                 updateHeartbeat(payload);
@@ -250,7 +251,8 @@
         function updateMovement(payload) {
             const status = payload.status;
             const name = payload.face_name || "Unknown";
-            movementText.textContent = status;
+            const angleStr = payload.angle !== undefined ? ` @ ${payload.angle}°` : "";
+            movementText.textContent = status + angleStr;
             confVal.textContent = (payload.confidence * 100).toFixed(0) + "%";
             
             let icon = "";
@@ -259,10 +261,13 @@
             else if (status === "CENTER") icon = "🎯";
             else if (status === "NO_LOCK") icon = "🔍";
             else if (status === "NO_FACE") icon = "🚫";
+            else if (status === "TRACKING") icon = "🎯";
+            else if (status === "SEARCHING") icon = "🔄";
+            else if (status === "WAITING") icon = "⏳";
             
-            movementIcon.innerHTML = `<span style="font-size: 4rem;">${icon}</span><br><span style="font-size: 1.5rem;">${status}</span><br><span style="font-size: 1.2rem; color: var(--text-secondary);">${name}</span>`;
+            movementIcon.innerHTML = `<span style="font-size: 4rem;">${icon}</span><br><span style="font-size: 1.5rem;">${status}</span><br><span style="font-size: 1.2rem; color: var(--text-secondary);">${name}${angleStr}</span>`;
             
-            log("Movement", `${status} (Name: ${name}, Conf: ${payload.confidence})`);
+            log("Movement", `${status} (Name: ${name}, Angle: ${payload.angle || 'N/A'})`);
         }
 
         function updateHeartbeat(payload) {

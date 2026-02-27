@@ -436,6 +436,9 @@ def main():
      cv2.namedWindow("recognize_new")
      cv2.setMouseCallback("recognize_new", on_mouse_click)
 
+     current_pan_angle = 90.0  # Float to allow smooth accumulation
+     search_time_offset = 0.0
+
      while True:
           ok, frame = cap.read()
           if not ok:
@@ -549,29 +552,49 @@ def main():
                if locked_cx is not None:
                     # Face is currently detected and mapped
                     center_x = w / 2
-                    deadzone_x = 50
-                    if locked_cx < center_x - deadzone_x:
-                         status = "MOVE_LEFT"
-                    elif locked_cx > center_x + deadzone_x:
-                         status = "MOVE_RIGHT"
-                    else:
-                         status = "CENTER"
-                    mqtt_manager.publish_movement(status, confidence=1.0, face_name=locked_face_label)
-                    cv2.putText(vis, f"SERVO: {status} (TRACKING)", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    
+                    # Proportional control: convert pixel error to angle offset
+                    error_x = locked_cx - center_x
+                    
+                    # If error is positive (face is right of center), we normally decrease angle
+                    # for typical servo setup, but check your physical orientation.
+                    # Adjust gain (0.05) to control how aggressively it tracks.
+                    kP = 0.05 
+                    angle_delta = error_x * kP
+                    
+                    # The physical setup typically mirrors webcams, you might need to negate angle_delta
+                    # depending on the servo mounting. Assuming standard:
+                    current_pan_angle -= angle_delta
+                    
+                    # Clamp between 0 and 180
+                    current_pan_angle = max(0.0, min(180.0, current_pan_angle))
+                    
+                    target_angle_int = int(current_pan_angle)
+                    
+                    # Sync search time offset to start smoothly later if lost
+                    search_time_offset = current_time
+
+                    status = "TRACKING"
+                    mqtt_manager.publish_movement(status, confidence=1.0, face_name=locked_face_label, angle=target_angle_int)
+                    cv2.putText(vis, f"SERVO: {target_angle_int} deg (TRACKING)", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                else:
                     # Face is locked but NOT found in current frame
-                    # Search mode: sweeping back and forth every 4 seconds
-                    sweep_cycle = int(current_time) % 8
-                    status = "MOVE_LEFT" if sweep_cycle < 4 else "MOVE_RIGHT"
+                    # Search mode: sweeping back and forth smoothly
+                    # Sweep frequency and range
+                    elapsed = current_time - search_time_offset
+                    # Sweep 45 def left/right from current position over ~6 seconds
+                    sweep_offset = 45.0 * np.sin(elapsed * 1.0) # 1.0 is speed multiplier
+                    target_angle_int = int(max(0.0, min(180.0, current_pan_angle + sweep_offset)))
                     
-                    mqtt_manager.publish_movement(status, confidence=0.0, face_name=f"SEARCHING {locked_face_label}")
-                    cv2.putText(vis, f"SERVO: {status} (SEARCHING)", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                    status = "SEARCHING"
+                    mqtt_manager.publish_movement(status, confidence=0.0, face_name=f"SEARCHING {locked_face_label}", angle=target_angle_int)
+                    cv2.putText(vis, f"SERVO: {target_angle_int} deg (SEARCHING)", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
           else:
                # No face locked
                if len(faces) > 0:
-                    mqtt_manager.publish_movement("NO_LOCK", confidence=0.0)
+                    mqtt_manager.publish_movement("WAITING", confidence=0.0, angle=90)
                else:
-                    mqtt_manager.publish_movement("NO_FACE", confidence=0.0)
+                    mqtt_manager.publish_movement("NO_FACE", confidence=0.0, angle=90)
 
           h, w = vis.shape[:2]  # Ensure frame dimensions are initialized
 

@@ -9,7 +9,7 @@ except ImportError:
     print("WARNING: paho-mqtt not installed. Run: pip install paho-mqtt")
 
 class MQTTManager:
-    def __init__(self, broker: str = "157.173.101.159", port: int = 1883, team_id: str = "Phoenix_team"):
+    def __init__(self, broker: str = "localhost", port: int = 1883, team_id: str = "Phoenix_team"):
         self.broker = broker
         self.port = port
         self.team_id = team_id
@@ -36,7 +36,7 @@ class MQTTManager:
     def _on_disconnect(self, client, userdata, rc):
         print(f"[MQTT] Disconnected with result code {rc}")
 
-    def publish_movement(self, status: str, confidence: float = 1.0, face_name: Optional[str] = None):
+    def publish_movement(self, status: str, confidence: float = 1.0, face_name: Optional[str] = None, angle: int = 90):
         if not self.client:
             return
         
@@ -45,6 +45,7 @@ class MQTTManager:
             "status": status,
             "confidence": confidence,
             "face_name": face_name,
+            "angle": angle,
             "timestamp": int(time.time())
         }
         try:
