@@ -3,10 +3,11 @@
 #include <Servo.h>
 
 Servo myservo;
-int servoPin = D5;
+int servoPin = D5;     // try D5 first
 int currentAngle = 90;
 int stepSize = 5;
 
+<<<<<<< HEAD
 struct WiFiNetwork {
   const char* ssid;
   const char* password;
@@ -21,6 +22,10 @@ WiFiNetwork networks[] = {
 };
 
 int currentNetwork = 0;
+=======
+const char* ssid = "RCA-OUTDOOR";
+const char* password = "RCA@2025";
+>>>>>>> parent of 0569526 (enabled multi-wifi on the servo)
 
 const char* mqtt_server = "10.12.74.5";
 const int mqtt_port = 1883;
@@ -29,35 +34,26 @@ const char* mqtt_topic_sub = "vision/Germany/movement";
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-void connectWiFi(int index) {
-  WiFi.disconnect();
-  delay(500);
+void setup_wifi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
 
-  Serial.print("Connecting to ");
-  Serial.println(networks[index].ssid);
-
-  WiFi.begin(networks[index].ssid, networks[index].password);
-
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+  Serial.print("Connecting");
+  while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
-    attempts++;
   }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi Connected");
-    currentNetwork = index;
-  } else {
-    Serial.println("\nFailed");
-  }
+  Serial.println("\nWiFi OK");
 }
 
 void moveServo(int delta) {
   currentAngle += delta;
   if (currentAngle < 0) currentAngle = 0;
   if (currentAngle > 180) currentAngle = 180;
+
   myservo.write(currentAngle);
+  Serial.print("Angle: ");
+  Serial.println(currentAngle);
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -65,19 +61,30 @@ void callback(char* topic, byte* payload, unsigned int length) {
   for (int i = 0; i < length; i++)
     message += (char)payload[i];
 
-  if (message.indexOf("MOVE_LEFT") >= 0) moveServo(stepSize);
-  if (message.indexOf("MOVE_RIGHT") >= 0) moveServo(-stepSize);
+  Serial.println(message);
+
+  if (message.indexOf("MOVE_LEFT") >= 0) {
+    moveServo(stepSize);
+  }
+
+  if (message.indexOf("MOVE_RIGHT") >= 0) {
+    moveServo(-stepSize);
+  }
+
   if (message.indexOf("CENTER") >= 0) {
     currentAngle = 90;
     myservo.write(currentAngle);
   }
 }
 
-void reconnectMQTT() {
-  while (!client.connected() && WiFi.status() == WL_CONNECTED) {
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("MQTT...");
     if (client.connect("esp8266_servo")) {
+      Serial.println("OK");
       client.subscribe(mqtt_topic_sub);
     } else {
+      Serial.println("retry");
       delay(2000);
     }
   }
@@ -85,38 +92,17 @@ void reconnectMQTT() {
 
 void setup() {
   Serial.begin(115200);
+
+  // IMPORTANT: attach with pulse range
   myservo.attach(servoPin, 500, 2400);
   myservo.write(currentAngle);
 
-  connectWiFi(currentNetwork);
-
+  setup_wifi();
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
 }
 
-void checkSerialWiFiSwitch() {
-  if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
-
-    if (cmd.startsWith("WIFI")) {
-      int index = cmd.substring(4).toInt();
-      if (index >= 0 && index < 3) {
-        connectWiFi(index);
-      } else {
-        Serial.println("Invalid WiFi index");
-      }
-    }
-  }
-}
-
 void loop() {
-  checkSerialWiFiSwitch();
-
-  if (WiFi.status() != WL_CONNECTED) return;
-
-  if (!client.connected())
-    reconnectMQTT();
-
+  if (!client.connected()) reconnect();
   client.loop();
 }
