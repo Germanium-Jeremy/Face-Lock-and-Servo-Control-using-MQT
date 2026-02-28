@@ -3,9 +3,12 @@
 #include <Servo.h>
 
 Servo myservo;
-int servoPin = D5;
+int servoPin = D4;
 int currentAngle = 0;
-int stepSize = 5;
+int targetAngle = 90;
+unsigned long lastMoveTime = 0;
+int moveInterval = 15; // ms between 1-degree steps
+unsigned long lastReconnectAttempt = 0;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -17,11 +20,12 @@ struct WiFiCred {
 };
 
 WiFiCred networks[] = {
+  {"God-Only-Knows", "Arlene+250"},
+  {"KARAHABUTAKA", "KARAHABUTAKA"},
+  {"Main Hall", "Meeting@2024"},
   {"RCA-OUTDOOR", "RCA@2025"},
   {"EdNet", "Huawei@123"},
-  {"Main Hall", "Meeting@2024"},
-  {"GROUND", "RCA@2024"},
-  {"RCA-OFFICE", "RCA@2024"}
+  {"GROUND", "RCA@2024"}
 };
 
 int currentWiFiIndex = 0;
@@ -58,36 +62,52 @@ void connectToWiFi(int index) {
   }
 }
 
-void moveServo(int delta) {
-  currentAngle += delta;
-  if (currentAngle < 0) currentAngle = 0;
-  if (currentAngle > 180) currentAngle = 180;
-  myservo.write(currentAngle);
-}
+
 
 void callback(char* topic, byte* payload, unsigned int length) {
   String message = "";
   for (int i = 0; i < length; i++)
     message += (char)payload[i];
+    
+  Serial.println(message);
 
-  if (message.indexOf("MOVE_LEFT") >= 0)
-    moveServo(stepSize);
-
-  if (message.indexOf("MOVE_RIGHT") >= 0)
-    moveServo(-stepSize);
-
-  if (message.indexOf("CENTER") >= 0) {
-    currentAngle = 90;
-    myservo.write(currentAngle);
+  // Simple substring parsing to find the angle in the JSON payload
+  int angleIdx = message.indexOf("\"angle\":");
+  if (angleIdx >= 0) {
+    int startIdx = angleIdx + 8; // skip past "angle":
+    // skip spaces
+    while (startIdx < message.length() && message.charAt(startIdx) == ' ') {
+      startIdx++;
+    }
+    int endIdx = startIdx;
+    while (endIdx < message.length() && isDigit(message.charAt(endIdx))) {
+      endIdx++;
+    }
+    
+    if (endIdx > startIdx) {
+      String degStr = message.substring(startIdx, endIdx);
+      targetAngle = degStr.toInt();
+      if (targetAngle < 0) targetAngle = 0;
+      if (targetAngle > 180) targetAngle = 180;
+      Serial.print("Target angle: ");
+      Serial.println(targetAngle);
+    }
   }
 }
 
 void reconnectMQTT() {
-  while (!client.connected()) {
+  unsigned long now = millis();
+  if (now - lastReconnectAttempt > 2000 || lastReconnectAttempt == 0) {
+    lastReconnectAttempt = now;
+    Serial.println("Attempting MQTT connection...");
     if (client.connect("esp8266_servo")) {
+      Serial.println("MQTT connected");
       client.subscribe(mqtt_topic_sub);
+      lastReconnectAttempt = 0;
     } else {
-      delay(2000);
+      Serial.print("Failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 2 seconds");
     }
   }
 }
@@ -123,5 +143,17 @@ void loop() {
     if (!client.connected())
       reconnectMQTT();
     client.loop();
+    
+    // Smooth movement without blocking
+    if (millis() - lastMoveTime >= moveInterval) {
+      if (currentAngle < targetAngle) {
+        currentAngle++;
+        myservo.write(currentAngle);
+      } else if (currentAngle > targetAngle) {
+        currentAngle--;
+        myservo.write(currentAngle);
+      }
+      lastMoveTime = millis();
+    }
   }
 }

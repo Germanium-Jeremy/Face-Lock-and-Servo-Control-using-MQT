@@ -404,7 +404,7 @@ def main():
      last_heartbeat = 0
      heartbeat_interval = 5.0 # seconds
 
-     cap = cv2.VideoCapture(1)
+     cap = cv2.VideoCapture(0)
      if not cap.isOpened():
           raise RuntimeError("Camera not available")
      
@@ -424,19 +424,23 @@ def main():
      locked_face_label = None  # Store the label of the locked face
 
      def on_mouse_click(event, x, y, flags, param):
-          nonlocal locked_face_label
+          nonlocal locked_face_label, locked_track_id
           if event == cv2.EVENT_LBUTTONDOWN:
                for track_id, tracked in tracked_faces_dict.items():
                     x1, y1, x2, y2 = tracked.bbox
                     if x1 <= x <= x2 and y1 <= y <= y2:
                          locked_face_label = tracked.label  # Save the label of the locked face
-                         print(f"Locked face label: {locked_face_label}")
+                         locked_track_id = track_id
+                         print(f"Locked face: label={locked_face_label}, track_id={locked_track_id}")
                          break
 
      cv2.namedWindow("recognize_new")
      cv2.setMouseCallback("recognize_new", on_mouse_click)
 
      current_pan_angle = 90.0  # Float to allow smooth accumulation
+     last_sent_angle = 90
+     locked_track_id = None
+     face_lost_time = 0.0
      search_time_offset = 0.0
 
      while True:
@@ -548,7 +552,14 @@ def main():
                mqtt_manager.publish_heartbeat()
                last_heartbeat = current_time
 
-          if use_tracking and locked_face_label is not None:
+          # Fallback: if detection didn't update locked_cx, check if the track is still alive
+          if locked_cx is None and locked_track_id is not None:
+               if locked_track_id in tracked_faces_dict:
+                    locked_cx = tracked_faces_dict[locked_track_id].centroid[0]
+                    face_lost_time = current_time # Still tracking it
+
+          target_angle_int = 90 # Default value to avoid UnboundLocalError
+          if use_tracking and (locked_face_label is not None or locked_track_id is not None):
                if locked_cx is not None:
                     # Face is currently detected and mapped
                     center_x = w / 2
@@ -556,18 +567,18 @@ def main():
                     # Proportional control: convert pixel error to angle offset
                     error_x = locked_cx - center_x
                     
-                    # If error is positive (face is right of center), we normally decrease angle
-                    # for typical servo setup, but check your physical orientation.
-                    # Adjust gain (0.05) to control how aggressively it tracks.
-                    kP = 0.05 
-                    angle_delta = error_x * kP
-                    
-                    # The physical setup typically mirrors webcams, you might need to negate angle_delta
-                    # depending on the servo mounting. Assuming standard:
-                    current_pan_angle -= angle_delta
-                    
-                    # Clamp between 0 and 180
-                    current_pan_angle = max(0.0, min(180.0, current_pan_angle))
+                    # DEADZONE: If face is within +/- 35 pixels, don't adjust motor
+                    deadzone = 35
+                    if abs(error_x) > deadzone:
+                         # Adjust gain (0.05) to control how aggressively it tracks.
+                         kP = 0.05 
+                         angle_delta = error_x * kP
+                         
+                         # Accumulate angle change
+                         current_pan_angle -= angle_delta
+                         
+                         # Clamp between 0 and 180
+                         current_pan_angle = max(0.0, min(180.0, current_pan_angle))
                     
                     target_angle_int = int(current_pan_angle)
                     
@@ -575,26 +586,47 @@ def main():
                     search_time_offset = current_time
 
                     status = "TRACKING"
-                    mqtt_manager.publish_movement(status, confidence=1.0, face_name=locked_face_label, angle=target_angle_int)
+                    # HYSTERESIS: Only publish if the angle changed by at least 1 degree
+                    if target_angle_int != last_sent_angle:
+                         mqtt_manager.publish_movement(status, confidence=1.0, face_name=str(locked_face_label), angle=target_angle_int)
+                         last_sent_angle = target_angle_int
+                         
                     cv2.putText(vis, f"SERVO: {target_angle_int} deg (TRACKING)", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                else:
-                    # Face is locked but NOT found in current frame
-                    # Search mode: sweeping back and forth smoothly
-                    # Sweep frequency and range
-                    elapsed = current_time - search_time_offset
-                    # Sweep 45 def left/right from current position over ~6 seconds
-                    sweep_offset = 45.0 * np.sin(elapsed * 1.0) # 1.0 is speed multiplier
-                    target_angle_int = int(max(0.0, min(180.0, current_pan_angle + sweep_offset)))
+                    # Target lost - check if we should wait or search
+                    lost_duration = current_time - face_lost_time
                     
-                    status = "SEARCHING"
-                    mqtt_manager.publish_movement(status, confidence=0.0, face_name=f"SEARCHING {locked_face_label}", angle=target_angle_int)
-                    cv2.putText(vis, f"SERVO: {target_angle_int} deg (SEARCHING)", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                    if lost_duration < 1.5:
+                         # Still within grace period, keep current angle
+                         status = "WAITING"
+                         target_angle_int = int(current_pan_angle)
+                         search_time_offset = current_time # Keep resetting search start
+                         if target_angle_int != last_sent_angle:
+                              mqtt_manager.publish_movement(status, confidence=0.5, face_name=f"LOST {locked_face_label}", angle=target_angle_int)
+                              last_sent_angle = target_angle_int
+                         cv2.putText(vis, f"SERVO: {target_angle_int} deg (WAITING {1.5-lost_duration:.1f}s)", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    else:
+                         # Grace period over, Search mode: sweeping back and forth
+                         elapsed = current_time - search_time_offset
+                         sweep_offset = 45.0 * np.sin(elapsed * 1.0) 
+                         target_angle_int = int(max(0.0, min(180.0, current_pan_angle + sweep_offset)))
+                         
+                         status = "SEARCHING"
+                         if target_angle_int != last_sent_angle:
+                              mqtt_manager.publish_movement(status, confidence=0.0, face_name=f"SEARCHING {locked_face_label}", angle=target_angle_int)
+                              last_sent_angle = target_angle_int
+                         cv2.putText(vis, f"SERVO: {target_angle_int} deg (SEARCHING)", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
           else:
                # No face locked
-               if len(faces) > 0:
-                    mqtt_manager.publish_movement("WAITING", confidence=0.0, angle=90)
-               else:
-                    mqtt_manager.publish_movement("NO_FACE", confidence=0.0, angle=90)
+               target_angle_int = 90
+               if target_angle_int != last_sent_angle:
+                    if len(faces) > 0:
+                         mqtt_manager.publish_movement("IDLE", confidence=0.0, angle=90)
+                    else:
+                         mqtt_manager.publish_movement("NO_FACE", confidence=0.0, angle=90)
+                    last_sent_angle = 90 
+               current_pan_angle = 90.0 # Reset internal state for next lock
+
 
           h, w = vis.shape[:2]  # Ensure frame dimensions are initialized
 

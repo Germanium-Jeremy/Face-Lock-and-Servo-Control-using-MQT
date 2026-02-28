@@ -4,7 +4,7 @@ import websockets
 import paho.mqtt.client as mqtt
 
 # Configuration
-MQTT_BROKER = "localhost"
+MQTT_BROKER = "157.173.101.159"
 MQTT_PORT = 1883
 MQTT_TOPIC = "vision/Phoenix_team/#"
 WS_PORT = 9002
